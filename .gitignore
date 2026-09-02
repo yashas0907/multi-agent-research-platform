@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Data (generated at runtime — never commit)
+data/
+*.db
+*.sqlite3
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Evaluation outputs (regenerable)
+evaluation/results/*.json
+evaluation/results/*.md
+!evaluation/results/.gitkeep

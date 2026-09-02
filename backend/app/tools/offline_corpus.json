@@ -1,0 +1,119 @@
+[
+  {
+    "title": "RAGAS: Automated Evaluation of Retrieval Augmented Generation",
+    "url": "https://arxiv.org/abs/2309.15217",
+    "source_type": "academic_paper",
+    "domain": "arxiv.org",
+    "published_at": "2023-09-26",
+    "snippet": "RAGAS (Retrieval Augmented Generation Assessment) is a framework for reference-free evaluation of RAG pipelines. It evaluates faithfulness, answer relevance, and context relevance using an LLM-based judge without requiring ground-truth answers.",
+    "keywords": ["ragas", "rag", "evaluation", "faithfulness", "answer relevance", "context relevance", "reference-free", "metrics", "benchmark", "automated evaluation", "assessment"]
+  },
+  {
+    "title": "ARES: An Automated Evaluation Framework for Retrieval-Augmented Generation Systems",
+    "url": "https://arxiv.org/abs/2311.09461",
+    "source_type": "academic_paper",
+    "domain": "arxiv.org",
+    "published_at": "2023-11-16",
+    "snippet": "ARES provides automated evaluation of RAG systems using fine-tuned judge models with statistical confidence intervals, reducing human annotation effort while maintaining correlation with human judgments on context relevance, answer faithfulness, and answer relevance.",
+    "keywords": ["ares", "rag", "evaluation", "automated", "judge model", "confidence intervals", "context relevance", "faithfulness", "answer relevance", "statistical", "benchmark", "framework"]
+  },
+  {
+    "title": "RAGChecker: A Fine-grained Framework for Diagnosing Retrieval-Augmented Generation",
+    "url": "https://arxiv.org/abs/2408.08067",
+    "source_type": "academic_paper",
+    "domain": "arxiv.org",
+    "published_at": "2024-08-14",
+    "snippet": "RAGChecker is a fine-grained evaluation framework with both holistic metrics and diagnostic metrics, enabling detailed diagnosis of retrieval and generation failures in RAG systems.",
+    "keywords": ["ragchecker", "rag", "evaluation", "diagnosis", "fine-grained", "diagnostic", "retrieval", "generation", "metrics", "framework", "benchmark"]
+  },
+  {
+    "title": "TruLens — open source LLM observability and evaluation",
+    "url": "https://www.trulens.org/",
+    "source_type": "documentation",
+    "domain": "trulens.org",
+    "published_at": null,
+    "snippet": "TruLens is an open source software library for evaluating and tracking LLM applications, including RAG triad feedback functions: context relevance, groundedness, and answer relevance.",
+    "keywords": ["trulens", "rag", "evaluation", "observability", "feedback functions", "groundedness", "context relevance", "answer relevance", "rag triad", "instrumentation", "python library"]
+  },
+  {
+    "title": "DeepEval — The LLM evaluation framework",
+    "url": "https://github.com/confident-ai/deepeval",
+    "source_type": "documentation",
+    "domain": "github.com",
+    "published_at": null,
+    "snippet": "DeepEval is an open-source LLM evaluation framework with unit testing of LLM applications, supporting metrics such as faithfulness, answer relevancy, contextual precision and recall, hallucination, and toxicity.",
+    "keywords": ["deepeval", "llm", "evaluation", "unit testing", "pytest", "faithfulness", "answer relevancy", "contextual precision", "contextual recall", "hallucination", "metrics", "framework"]
+  },
+  {
+    "title": "A Survey on Evaluation of Large Language Models and Generation Tasks",
+    "url": "https://arxiv.org/abs/2405.02319",
+    "source_type": "academic_paper",
+    "domain": "arxiv.org",
+    "published_at": "2024-05-04",
+    "snippet": "Survey covering evaluation methods and benchmarks for LLMs and generation tasks, including human evaluation, automated metrics, and LLM-as-judge approaches with their limitations.",
+    "keywords": ["survey", "llm", "evaluation", "benchmarks", "human evaluation", "llm-as-judge", "automated metrics", "generation tasks"]
+  },
+  {
+    "title": "LangSmith Evaluation Overview",
+    "url": "https://docs.smith.langchain.com/evaluation",
+    "source_type": "company_doc",
+    "domain": "docs.smith.langchain.com",
+    "published_at": null,
+    "snippet": "LangSmith provides evaluation tools for LLM applications including datasets, evaluators, and online evaluation, supporting both LLM-as-judge and custom heuristic evaluators.",
+    "keywords": ["langsmith", "evaluation", "llm-as-judge", "datasets", "evaluators", "online evaluation", "tracing", "langchain"]
+  },
+  {
+    "title": "Azure AI evaluation metrics",
+    "url": "https://learn.microsoft.com/en-us/azure/ai-foundry/",
+    "source_type": "company_doc",
+    "domain": "learn.microsoft.com",
+    "published_at": null,
+    "snippet": "Microsoft's evaluation tooling provides groundedness, relevance, and coherence metrics for generative AI applications with integrated safety evaluations.",
+    "keywords": ["azure", "microsoft", "evaluation", "metrics", "groundedness", "relevance", "coherence", "safety", "generative ai"]
+  },
+  {
+    "title": "Improving RAG evaluation — key metrics",
+    "url": "https://python.langchain.com/docs/guides/evaluation/rag/",
+    "source_type": "documentation",
+    "domain": "python.langchain.com",
+    "published_at": null,
+    "snippet": "LangChain guidance on evaluating RAG pipelines: context relevance, faithfulness/groundedness, and answer relevance, with dataset construction and evaluator guidance.",
+    "keywords": ["rag", "evaluation", "langchain", "context relevance", "faithfulness", "groundedness", "answer relevance", "datasets", "evaluators"]
+  },
+  {
+    "title": "Giskard — Open-source LLM vulnerability scanning and evaluation",
+    "url": "https://github.com/Giskard-AI/giskard",
+    "source_type": "documentation",
+    "domain": "github.com",
+    "published_at": null,
+    "snippet": "Giskard is an open-source framework for testing LLM applications, detecting performance bugs, hallucinations, and harmful content through automated scanning and human feedback.",
+    "keywords": ["giskard", "llm", "vulnerability", "scanning", "evaluation", "hallucination", "harmful content", "testing", "framework", "open-source"]
+  },
+  {
+    "title": "Production RAG: evaluation and monitoring practices",
+    "url": "https://www.llamaindex.ai/blog",
+    "source_type": "technical_blog",
+    "domain": "llamaindex.ai",
+    "published_at": null,
+    "snippet": "LlamaIndex blog and documentation on building production RAG systems, covering retrieval evaluation, quality metrics, and observability considerations.",
+    "keywords": ["llamaindex", "rag", "production", "retrieval", "evaluation", "monitoring", "observability", "blog"]
+  },
+  {
+    "title": "RAG evaluation with vector databases",
+    "url": "https://zilliz.com/blog/rag-evaluation",
+    "source_type": "technical_blog",
+    "domain": "zilliz.com",
+    "published_at": null,
+    "snippet": "Practical guide to evaluating RAG pipelines using vector databases, including retrieval hit-rate, MRR, and generation quality metrics.",
+    "keywords": ["zilliz", "milvus", "vector database", "rag", "evaluation", "hit rate", "mrr", "metrics", "retrieval"]
+  },
+  {
+    "title": "LLM evaluation approaches for customer support automation",
+    "url": "https://research.aimultiple.com/llm-evaluation/",
+    "source_type": "technical_blog",
+    "domain": "research.aimultiple.com",
+    "published_at": null,
+    "snippet": "Overview of LLM evaluation approaches for support automation, discussing metric selection, dataset curation, and continuous monitoring.",
+    "keywords": ["llm", "evaluation", "customer support", "chatbot", "metrics", "monitoring", "dataset curation"]
+  }
+]
