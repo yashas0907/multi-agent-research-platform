@@ -35,3 +35,6 @@ Thumbs.db
 evaluation/results/*.json
 evaluation/results/*.md
 !evaluation/results/.gitkeep
+
+# TS build info
+frontend/tsconfig.tsbuildinfo
