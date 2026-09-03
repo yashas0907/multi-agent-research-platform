@@ -368,7 +368,7 @@ class Orchestrator:
 
             # extract from doc hits for this subquestion
             if doc_hits:
-                await self._extract_from_doc_hits(doc_hits, sq, evidence_agent)
+                await self._extract_from_doc_hits(doc_hits, sq)
 
         # doc hits already consumed; avoid double extraction next iteration
         self.document_sources = []
@@ -376,9 +376,12 @@ class Orchestrator:
     async def _search_user_documents(self, sq) -> list[dict]:
         if not self.document_sources:
             return []
+        # Scope strictly to THIS session's documents — never search other
+        # sessions' corpora (privacy + relevance).
+        doc_ids = [self._raw_doc_id(s.id) for s in self.document_sources]
         result = await self.runner.execute(
             "vector_search",
-            {"query": sq.text, "top_k": 6},
+            {"query": sq.text, "top_k": 6, "document_ids": doc_ids},
         )
         if not result.ok:
             return []
@@ -387,6 +390,13 @@ class Orchestrator:
             "vector", "info", f"Document search: {len(hits)} chunk(s) for subquestion", hits=len(hits)
         )
         return hits
+
+    @staticmethod
+    def _raw_doc_id(source_id: str) -> str:
+        """SourceRecords for documents use id='doc_<raw_id>' (see
+        ResearchService._load_document_sources); the vector store indexes the
+        raw document id. Strip the prefix to map between them."""
+        return source_id.removeprefix("doc_")
 
     async def _ingest_candidate_source(
         self, item: dict, sq, evaluator, evidence_agent
@@ -438,21 +448,29 @@ class Orchestrator:
                     continue
                 sq.evidence_ids.append(e.id)
 
-    async def _extract_from_doc_hits(self, hits: list[dict], sq, evidence_agent) -> None:
-        """Turn user-document chunks into evidence items with provenance."""
+    async def _extract_from_doc_hits(self, hits: list[dict], sq) -> None:
+        """Turn user-document chunks into evidence items with provenance.
+
+        Chunks are matched back to their SourceRecord by document id —
+        exact mapping, never title heuristics (untitled docs would be lost).
+        """
         from app.agents.evidence import _grounded
 
         for hit in hits:
             text = hit.get("text", "")
-            title = hit.get("source_title") or "User document"
-            doc_source = next(
-                (s for s in self.document_sources if s.title == title), None
-            )
-            if doc_source is None or not text:
+            raw_doc_id = hit.get("document_id", "")
+            if not text or not raw_doc_id:
                 continue
+            doc_source = next(
+                (s for s in self.document_sources if s.id == f"doc_{raw_doc_id}"),
+                None,
+            )
+            if doc_source is None:
+                continue
+            # Grounding: chunk text must come from this document's content.
             snippet = text[:600]
             if not _grounded(snippet, doc_source.content_text or ""):
-                snippet = text[:400]
+                continue  # never keep an ungrounded chunk
             ev = Evidence(
                 id=f"ev_{uuid.uuid4().hex[:10]}",
                 claim_summary=f"From user document: {snippet[:180]}",

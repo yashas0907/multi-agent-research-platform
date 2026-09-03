@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests (offline providers — no API keys, no network tools)
+        env:
+          APP_ENV: test
+          LLM_PROVIDER: mock
+          EMBEDDING_PROVIDER: mock
+          WEB_SEARCH_PROVIDER: offline
+          DATABASE_URL: "sqlite+aiosqlite://"
+          LOG_LEVEL: WARNING
+        run: python -m pytest -p no:cacheprovider
+
+  evaluation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run evaluation framework (measured metrics)
+        env:
+          APP_ENV: test
+          LLM_PROVIDER: mock
+          EMBEDDING_PROVIDER: mock
+          WEB_SEARCH_PROVIDER: offline
+          DATABASE_URL: "sqlite+aiosqlite://"
+          LOG_LEVEL: WARNING
+        run: python evaluation/run_evaluation.py
+
+      - name: Check evaluation produced metrics
+        run: |
+          python - <<'EOF'
+          import json
+          data = json.load(open("evaluation/results/evaluation_results.json"))
+          n = len(data["metrics"])
+          assert n >= 6, f"expected >=6 measured metrics, got {n}"
+          print(f"OK: {n} metrics measured")
+          EOF
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build (strict TypeScript)
+        run: npm run build

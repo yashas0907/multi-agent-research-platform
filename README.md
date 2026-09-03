@@ -312,6 +312,12 @@ cd ../backend && python -m pytest
 
 # Evaluation
 python ../evaluation/run_evaluation.py
+
+# One research session from the CLI (offline providers by default)
+python ../scripts/run_research.py "Compare RAGAS and TruLens for RAG evaluation" --depth quick
+
+# Quick stack sanity check (imports, tools, one pipeline run)
+python ../scripts/check_offline_stack.py
 ```
 
 The default configuration (mock LLM + offline corpus + mock embeddings) runs
@@ -328,7 +334,7 @@ docker compose up --build
 
 ## Testing
 
-77 tests across four layers:
+82 tests across four layers:
 
 - **Unit:** schemas/invariants, source scoring (recency/domain trust), budget
   logic, tool validation & budgets, calculator injection resistance, chunker,
@@ -340,6 +346,13 @@ docker compose up --build
 - **Failure:** search outage, unreachable sources, LLM provider death, zero
   search budget, cancellation mid-run — all must degrade, never crash, never
   fabricate.
+- **Hybrid research:** session-scoped document search (no cross-session
+  leakage), document evidence provenance by exact id mapping, research memory
+  (no duplicate queries, followup consumption from critic verdicts).
+
+CI (`.github/workflows/ci.yml`) runs all backend tests, the evaluation
+framework (asserting ≥ 6 measured metrics), and the strict-TypeScript
+frontend build on every push — fully offline, no secrets required.
 
 ## Limitations
 
