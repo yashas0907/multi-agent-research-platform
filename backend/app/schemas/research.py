@@ -67,6 +67,9 @@ class SourceRecord(BaseModel):
     is_primary: bool = False
     evaluation_notes: str | None = None
     fetched_ok: bool = False
+    # Defense-in-depth signal: source content contains instruction-like text.
+    # The pipeline never executes source content regardless of this flag.
+    suspected_injection: bool = False
     content_text: str | None = None  # retrieved body text (untrusted content)
 
     @field_validator("url")

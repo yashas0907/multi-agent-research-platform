@@ -310,6 +310,13 @@ class Orchestrator:
             if doc_source.id not in state.sources:
                 if self.budget.can_add_source(state):
                     state.sources[doc_source.id] = doc_source
+                    if doc_source.suspected_injection:
+                        await self._emit(
+                            "security",
+                            "warning",
+                            "Uploaded document contains instruction-like content "
+                            "(treated as data, never executed)",
+                        )
 
         targets = [
             sq for sq in state.subquestions if sq.status != SubQuestionStatus.ANSWERED

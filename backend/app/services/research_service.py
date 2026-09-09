@@ -127,6 +127,16 @@ class ResearchService:
 
         return sync
 
+    # event sink: persist every safe operational event to the DB as it happens
+    def _make_event_sink(self, session_id: str):
+        async def sink(event) -> None:
+            try:
+                await self._persist_event(event)
+            except Exception:  # noqa: BLE001 — observability must not break research
+                pass
+
+        return sink
+
     async def cancel(self, session_id: str) -> bool:
         task = _RUNNING.get(session_id)
         if task is None or task.done():
@@ -202,20 +212,25 @@ class ResearchService:
                     is_primary=True,
                     evaluation_notes="User-provided document (trusted as primary input)",
                     fetched_ok=True,
+                    suspected_injection=_detect_injection(content),
                 )
             )
         return sources
 
 
-    # event sink: persist every safe operational event to the DB as it happens
-    def _make_event_sink(self, session_id: str):
-        async def sink(event) -> None:
-            try:
-                await self._persist_event(event)
-            except Exception:  # noqa: BLE001 — observability must not break research
-                pass
+def _detect_injection(content: str) -> bool:
+    """Flag injection-style content in user documents (defense-in-depth).
 
-        return sink
+    The pipeline NEVER executes document content regardless of this flag —
+    this exists so the security trace warns users their upload contains
+    suspicious instruction-like text.
+    """
+    from app.tools.web_fetch import detect_injection
+
+    try:
+        return detect_injection(content)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # session_id -> live orchestrator (for cancellation)
