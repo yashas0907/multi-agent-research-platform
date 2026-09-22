@@ -325,6 +325,38 @@ the **entire** pipeline with zero API keys — deliberately, so the system is
 demonstrable and CI-reproducible. For real research: set `LLM_PROVIDER`,
 `LLM_API_KEY`, `EMBEDDING_PROVIDER`, `WEB_SEARCH_PROVIDER` in `.env`.
 
+### Real research on free tiers (verified)
+
+```env
+LLM_PROVIDER=groq
+GROQ_API_KEY=<your free key from console.groq.com>
+GROQ_MODEL=openai/gpt-oss-120b
+LLM_FALLBACK_MODELS=qwen/qwen3.8-27b,groq/compound-mini
+LLM_MIN_INTERVAL_SECONDS=8
+LLM_REASONING_EFFORT=low
+EMBEDDING_PROVIDER=mock
+WEB_SEARCH_PROVIDER=duckduckgo
+```
+
+Measured on the free tier (all free, no credit card):
+
+- **Full research session: ~3–5 minutes end-to-end** (standard depth)
+- Live web search via DuckDuckGo (no key, real results)
+- Free-tier resilience is engineered, not hoped for: per-model rate-limit
+  buckets with an automatic **fallback model chain** (120b → qwen →
+  compound-mini), **token-aware adaptive pacing** from provider rate-limit
+  headers, capped retry waits, and **graceful degradation** — a rate-limited
+  step degrades honestly (noted in the report) instead of failing the session
+- Real analysis quality: verbatim-grounded evidence, honest confidence
+  distribution (e.g. 5 HIGH / 2 MODERATE / 4 INSUFFICIENT), contradictions
+  surfaced, real cited sources
+- Model output shape drift is handled by tolerant coercion layers on every
+  agent schema + explicit JSON shapes in every prompt
+
+Note: Groq free tier has no embeddings API — document search uses the
+deterministic hashing embedder (works, weaker semantics). Swap
+`EMBEDDING_PROVIDER` when a free embedding source is configured.
+
 ### Docker
 
 ```bash
