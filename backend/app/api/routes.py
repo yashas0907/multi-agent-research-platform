@@ -117,6 +117,70 @@ async def research_events(
     return TraceResponse(session_id=session_id, events=events)
 
 
+@router.get("/research/{session_id}/events/stream")
+async def research_events_stream(session_id: str) -> StreamingResponse:
+    """Server-Sent Events stream: true real-time trace (no polling).
+
+    Yields each new event as `data: {json}\\n\\n`, then a final `status`
+    payload when the job reaches a terminal state, then closes. Clients
+    should fall back to polling /events if the stream errors.
+    """
+    import asyncio
+    import json as _json
+
+    try:
+        if not await repository.exists(session_id):
+            raise NotFoundError(f"research session {session_id} not found")
+    except NotFoundError as exc:
+        raise _not_found(exc) from exc
+
+    async def generator():
+        sent = 0
+        idle_polls = 0
+        while True:
+            events = await repository.get_events(session_id, after_index=sent)
+            if events:
+                idle_polls = 0
+                for e in events:
+                    sent += 1
+                    payload = _json.dumps(e.model_dump(mode="json"), default=str)
+                    yield f"data: {payload}\n\n"
+            else:
+                idle_polls += 1
+
+            # status check: close the stream on terminal states
+            try:
+                summary = await repository.status_summary(session_id)
+            except NotFoundError:
+                break
+            terminal = summary["status"] in (
+                "report_ready", "failed", "cancelled", "completed_partial"
+            )
+            if terminal and not events:
+                # drain any events that raced in, then send final status + close
+                final = await repository.get_events(session_id, after_index=sent)
+                for e in final:
+                    sent += 1
+                    payload = _json.dumps(e.model_dump(mode="json"), default=str)
+                    yield f"data: {payload}\n\n"
+                yield f"data: {_json.dumps({'type': 'status', 'status': summary['status'], 'progress_pct': summary['progress_pct'], 'stage_label': summary['stage_label']})}\n\n"
+                yield "data: {\"type\": \"done\"}\n\n"
+                break
+            if terminal and events:
+                continue  # loop once more to send the closing status
+            # safety: don't stream forever if the job vanished
+            if idle_polls > 900:  # ~15 min at 1s
+                yield "data: {\"type\": \"done\"}\n\n"
+                break
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/research/{session_id}/report")
 async def research_report(session_id: str) -> dict:
     try:

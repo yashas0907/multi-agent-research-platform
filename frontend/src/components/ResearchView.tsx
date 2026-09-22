@@ -25,33 +25,73 @@ export default function ResearchView({ sessionId, onReset }: Props) {
 
   useEffect(() => {
     let alive = true;
-    const poll = async () => {
-      try {
-        const s = await api.getStatus(sessionId);
-        if (!alive) return;
-        setStatus(s);
+    let es: EventSource | null = null;
 
-        const ev = await api.getEvents(sessionId, seen.current);
-        if (ev.events.length > 0) {
-          seen.current += ev.events.length;
-          setEvents((prev) => [...prev, ...ev.events]);
-        }
-        const sq = await api.getSubQuestions(sessionId);
-        if (alive) setSubquestions(sq.subquestions);
-
-        if (TERMINAL.includes(s.status)) {
-          if (s.status === "report_ready" || s.status === "completed_partial") {
-            setTab("report");
+    const startPolling = () => {
+      const poll = async () => {
+        try {
+          const s = await api.getStatus(sessionId);
+          if (!alive) return;
+          setStatus(s);
+          const ev = await api.getEvents(sessionId, seen.current);
+          if (ev.events.length > 0) {
+            seen.current += ev.events.length;
+            setEvents((prev) => [...prev, ...ev.events]);
           }
-          return; // stop polling
+          const sq = await api.getSubQuestions(sessionId);
+          if (alive) setSubquestions(sq.subquestions);
+          if (TERMINAL.includes(s.status)) {
+            if (s.status === "report_ready" || s.status === "completed_partial") {
+              setTab("report");
+            }
+            return; // stop polling
+          }
+        } catch {
+          /* transient poll failure — keep trying */
         }
-      } catch {
-        /* transient poll failure — keep trying */
-      }
-      if (alive) setTimeout(poll, POLL_MS);
+        if (alive) setTimeout(poll, POLL_MS);
+      };
+      poll();
     };
-    poll();
-    return () => { alive = false; };
+
+    // Real-time first: SSE stream for events + status; polling only as
+    // fallback if the stream errors (e.g. proxies without SSE support).
+    try {
+      es = api.openEventStream(
+        sessionId,
+        (e) => {
+          seen.current += 1;
+          setEvents((prev) => [...prev, e]);
+        },
+        (s) => {
+          setStatus((prev) =>
+            prev ? { ...prev, status: s.status as StatusResponse["status"], progress_pct: s.progress_pct, stage_label: s.stage_label } : prev
+          );
+        },
+        () => {
+          // stream closed → one final full refresh (report, subquestions)
+          api.getStatus(sessionId).then((s) => alive && setStatus(s)).catch(() => {});
+          api.getSubQuestions(sessionId).then((r) => alive && setSubquestions(r.subquestions)).catch(() => {});
+          api
+            .getReport(sessionId)
+            .then(() => alive && setTab("report"))
+            .catch(() => {});
+        }
+      );
+      es.onerror = () => {
+        // stream failed — close and fall back to polling
+        es?.close();
+        es = null;
+        if (alive) startPolling();
+      };
+    } catch {
+      startPolling();
+    }
+
+    return () => {
+      alive = false;
+      es?.close();
+    };
   }, [sessionId]);
 
   const cancel = async () => {

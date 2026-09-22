@@ -161,6 +161,27 @@ export const api = {
 
   getStatus: (id: string) => jsonFetch<StatusResponse>(`/api/research/${id}/status`),
 
+  // True real-time trace via SSE; returns an EventSource the caller closes.
+  openEventStream: (id: string, onEvent: (e: AgentEvent) => void, onStatus?: (s: { status: string; progress_pct: number; stage_label: string }) => void, onDone?: () => void) => {
+    const es = new EventSource(`${BASE}/api/research/${id}/events/stream`);
+    es.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        if (data.type === "done") {
+          es.close();
+          onDone?.();
+        } else if (data.type === "status") {
+          onStatus?.(data);
+        } else if (data.id) {
+          onEvent(data as AgentEvent);
+        }
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+    return es;
+  },
+
   getEvents: (id: string, after = 0) =>
     jsonFetch<{ events: AgentEvent[] }>(`/api/research/${id}/events?after=${after}`),
 
