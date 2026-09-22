@@ -373,8 +373,10 @@ Deploy the backend to [Render](https://render.com) and the frontend to
    Render reads `render.yaml` automatically. Set the secret `GROQ_API_KEY`
    in the dashboard; set `CORS_ORIGINS` to your Vercel URL after step 2.
 2. **Frontend (Vercel):** vercel.com → Add New → Project → import this repo.
-   Set `VITE_API_URL` to your Render URL (e.g.
-   `https://research-platform-api.onrender.com`).
+   **Set Root Directory to `frontend`** (Configure Project → Root Directory),
+   then Settings → Environment Variables → add `VITE_API_URL` = your Render
+   URL (e.g. `https://research-platform-api.onrender.com`). No other config
+   needed — Vercel auto-detects the Vite build.
 3. Redeploy the backend so CORS picks up the frontend URL.
 
 Free-tier notes: Render sleeps after ~15 min idle (~50s cold start on the
