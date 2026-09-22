@@ -364,6 +364,22 @@ docker compose up --build
 # backend :8000, frontend :5173, persistent volume for data
 ```
 
+### Live deployment (free tiers)
+
+Deploy the backend to [Render](https://render.com) and the frontend to
+[Vercel](https://vercel.com) — both free:
+
+1. **Backend (Render):** render.com → New → Blueprint → import this repo.
+   Render reads `render.yaml` automatically. Set the secret `GROQ_API_KEY`
+   in the dashboard; set `CORS_ORIGINS` to your Vercel URL after step 2.
+2. **Frontend (Vercel):** vercel.com → Add New → Project → import this repo.
+   Set `VITE_API_URL` to your Render URL (e.g.
+   `https://research-platform-api.onrender.com`).
+3. Redeploy the backend so CORS picks up the frontend URL.
+
+Free-tier notes: Render sleeps after ~15 min idle (~50s cold start on the
+next request); SSE streaming is supported by both platforms.
+
 ## Testing
 
 82 tests across four layers:
