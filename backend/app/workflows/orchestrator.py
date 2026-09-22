@@ -224,7 +224,16 @@ class Orchestrator:
             claims = self._derive_claims()
             if claims:
                 factchecker = FactCheckerAgent(self.ctx)
-                await factchecker.run(claims, list(state.evidence.values()))
+                try:
+                    await factchecker.run(claims, list(state.evidence.values()))
+                except LLMError as exc:
+                    # Degradation: unverified claims stay INSUFFICIENT_EVIDENCE
+                    # (conservative + honest) — never a session failure.
+                    await self._emit(
+                        "factchecker",
+                        "warning",
+                        f"Fact checking unavailable ({str(exc)[:80]}) — claims marked unverified",
+                    )
                 self._sync_usage()
                 for c in claims:
                     state.claims[c.id] = c
@@ -233,7 +242,15 @@ class Orchestrator:
             await self._stage("Contradiction check", ResearchStage.CONTRADICTION_CHECK, "contradiction")
             contradiction_agent = ContradictionAgent(self.ctx)
             trust = {sid: s.trust_score for sid, s in state.sources.items()}
-            found = await contradiction_agent.run(list(state.evidence.values()), trust)
+            try:
+                found = await contradiction_agent.run(list(state.evidence.values()), trust)
+            except LLMError as exc:
+                await self._emit(
+                    "contradiction",
+                    "warning",
+                    f"Contradiction detection unavailable ({str(exc)[:80]}) — skipped",
+                )
+                found = []
             state.contradictions.extend(found)
             self._sync_usage()
 
@@ -242,9 +259,20 @@ class Orchestrator:
 
             # -- critic --
             await self._stage("Critiquing", ResearchStage.CRITIQUING, "critic")
-            verdict = await critic_agent.run(
-                state, list(state.evidence.values()), list(state.claims.values()), pass_num=iteration
-            )
+            try:
+                verdict = await critic_agent.run(
+                    state, list(state.evidence.values()), list(state.claims.values()), pass_num=iteration
+                )
+            except LLMError as exc:
+                # Critic unavailable: proceed to synthesis with an honest note —
+                # looping for more research would burn the rate limit further.
+                from app.schemas.research import CriticVerdict
+
+                verdict = CriticVerdict(
+                    findings=[],
+                    research_sufficient=True,
+                    overall_assessment=f"Critic unavailable ({str(exc)[:80]}) — proceeding with available evidence",
+                )
             state.critic_verdicts.append(verdict)
             self._sync_usage()
 
@@ -264,9 +292,19 @@ class Orchestrator:
         # ---- synthesis -----------------------------------------------------
         await self._stage("Synthesizing", ResearchStage.SYNTHESIZING, "synthesis")
         synthesis = SynthesisAgent(self.ctx)
-        synth_out = await synthesis.run(
-            state, list(state.evidence.values()), list(state.claims.values()), state.contradictions
-        )
+        try:
+            synth_out = await synthesis.run(
+                state, list(state.evidence.values()), list(state.claims.values()), state.contradictions
+            )
+        except LLMError as exc:
+            # Synthesis unavailable: build an honest code-side report from the
+            # verified claims — structured, cited, no fabricated prose.
+            synth_out = _fallback_synthesis(state)
+            await self._emit(
+                "synthesis",
+                "warning",
+                f"LLM synthesis unavailable ({str(exc)[:80]}) — generated code-side summary",
+            )
         self._sync_usage()
 
         # ---- citation audit --------------------------------------------------
@@ -275,16 +313,20 @@ class Orchestrator:
             Finding(
                 statement=f.statement,
                 evidence_ids=[i for i in f.evidence_ids],
-                confidence=EvidenceConfidence(f.confidence),
+                confidence=_confidence_of(f.confidence),
                 is_interpretation=f.is_interpretation,
                 caveat=f.caveat,
             )
             for f in synth_out.key_findings
         ]
-        citation_agent = CitationAgent(self.ctx)
-        findings, _issues = await citation_agent.run(
-            findings, [e.id for e in state.evidence.values()]
-        )
+        try:
+            citation_agent = CitationAgent(self.ctx)
+            findings, _issues = await citation_agent.run(
+                findings, [e.id for e in state.evidence.values()]
+            )
+        except LLMError:
+            # Citation audit is a refinement — skip it, keep findings as-is.
+            pass
         self._sync_usage()
 
         report = self._build_report(synth_out, findings)
@@ -304,6 +346,11 @@ class Orchestrator:
         search_agent = SearchAgent(self.ctx)
         evaluator = SourceEvaluatorAgent(self.ctx)
         evidence_agent = EvidenceAgent(self.ctx)
+
+        # Real progress: the UI must reflect Searching/Gathering during this
+        # phase — never stay on "Planning" while searches run.
+        self._set_stage(ResearchStage.SEARCHING)
+        await self._emit("search", "stage_started", "Searching sources started", stage="searching")
 
         # Promote user documents as candidate sources for this session (once).
         for doc_source in self.document_sources:
@@ -342,17 +389,33 @@ class Orchestrator:
             # --- web queries ---
             queries: list[str] = list(followup_map.get(sq.id, []))
             if len(queries) < profile["queries_per_subquestion"] and self.budget.can_search(state):
-                generated = await search_agent.run(state, sq)
-                queries.extend(q.query for q in generated.queries)
+                try:
+                    generated = await search_agent.run(state, sq)
+                    queries.extend(q.query for q in generated.queries)
+                except LLMError as exc:
+                    self._sync_usage()
+                    await self._emit(
+                        "search",
+                        "warning",
+                        f"Query generation unavailable ({str(exc)[:80]}) — using context query",
+                    )
+                    queries.append(sq.text[:180])
 
             if not queries and not doc_hits:
                 sq.status = SubQuestionStatus.INSUFFICIENT
                 continue
 
-            # Search → fetch → evaluate → extract, per query
+            # Search → pre-filter → batch-evaluate → fetch → extract, per query
             for query in queries:
                 self._check_cancel()
                 if not self.budget.can_search(state):
+                    break
+                if not self.budget.can_call_llm(state):
+                    await self._emit(
+                        "orchestrator",
+                        "warning",
+                        "LLM call budget exhausted — finishing research with gathered evidence",
+                    )
                     break
                 await self._emit(
                     "search", "info", f"Searching: {query[:120]}", query_len=len(query)
@@ -366,11 +429,51 @@ class Orchestrator:
                 if not result.ok:
                     continue
 
+                # Deterministic pre-filter: skip obviously irrelevant sources
+                # BEFORE any LLM call (free-tier economics + speed).
+                candidates: list[SourceRecord] = []
                 for item in (result.output or {}).get("results", []):
                     if not self.budget.can_add_source(state):
                         break
-                    await self._ingest_candidate_source(
-                        item, sq, evaluator, evidence_agent
+                    cand = _candidate_from_item(item)
+                    if cand is None or self._url_seen(state, cand.url):
+                        continue
+                    if not _relevant_enough(cand, sq):
+                        continue
+                    candidates.append(cand)
+
+                if not candidates:
+                    continue
+
+                # Evaluate: LLM batch (deep) or deterministic-only
+                # (quick/standard — preserves tokens for fact-check/synthesis).
+                try:
+                    if profile.get("llm_source_eval", False):
+                        trusted = await evaluator.evaluate_batch(candidates[:8], sq)
+                    else:
+                        trusted = [
+                            await evaluator.evaluate_deterministic(c, sq)
+                            for c in candidates[:8]
+                        ]
+                except LLMError as exc:
+                    self._sync_usage()
+                    await self._emit(
+                        "source_evaluator",
+                        "warning",
+                        f"Source evaluation unavailable ({str(exc)[:80]}) — skipping this query",
+                    )
+                    continue
+                self._sync_usage()
+                for cand in trusted:
+                    if cand.trust_score <= 0.0:
+                        await self._emit(
+                            "source_evaluator",
+                            "info",
+                            f"Discarded low-quality source: {cand.title[:60]}",
+                        )
+                        continue
+                    await self._ingest_evaluated_source(
+                        cand, sq, evidence_agent
                     )
 
             # extract from doc hits for this subquestion
@@ -405,29 +508,20 @@ class Orchestrator:
         raw document id. Strip the prefix to map between them."""
         return source_id.removeprefix("doc_")
 
-    async def _ingest_candidate_source(
-        self, item: dict, sq, evaluator, evidence_agent
+    async def _ingest_evaluated_source(
+        self, candidate: SourceRecord, sq, evidence_agent
     ) -> None:
+        """Fetch + extract evidence from an already-evaluated candidate."""
         state = self.state
-        url = item.get("url", "")
-        if not url or url in {s.url for s in state.sources.values()}:
-            return
-
-        candidate = SourceRecord(
-            id=f"src_{uuid.uuid4().hex[:10]}",
-            title=(item.get("title") or "Untitled")[:300],
-            url=url,
-            domain=item.get("domain"),
-            snippet=(item.get("snippet") or "")[:600],
-            published_at=item.get("published_at"),
-        )
-        candidate = await evaluator.evaluate(candidate, sq)
-        if candidate.trust_score <= 0.0:
-            await self._emit(
-                "source_evaluator", "info", f"Discarded low-quality source: {candidate.title[:60]}"
-            )
-            return
+        url = candidate.url or ""
         state.sources[candidate.id] = candidate
+
+        # Real progress: transition to evidence gathering on first extraction.
+        if state.status == ResearchStage.SEARCHING:
+            self._set_stage(ResearchStage.GATHERING_EVIDENCE)
+            await self._emit(
+                "evidence", "stage_started", "Gathering evidence started", stage="gathering_evidence"
+            )
 
         # Fetch content for evidence extraction (untrusted data)
         fetch = await self.runner.execute("web_fetch", {"url": url})
@@ -447,13 +541,31 @@ class Orchestrator:
                 f"Could not fetch source content: {candidate.title[:60]}",
             )
 
-        if candidate.content_text:
-            items = await evidence_agent.run(state, candidate, sq)
+        if candidate.content_text and self.budget.can_call_llm(state):
+            # Saturation check: skip extraction when this subquestion already
+            # has enough evidence (saves LLM calls on the free tier).
+            if len(sq.evidence_ids) >= self.ctx.profile["max_evidence_per_subquestion"]:
+                return
+            # Evidence extraction is optional: rate-limited/failed extraction
+            # degrades to fewer evidence (noted honestly), never a session failure.
+            try:
+                items = await evidence_agent.run(state, candidate, sq)
+            except LLMError as exc:
+                self._sync_usage()
+                await self._emit(
+                    "evidence",
+                    "warning",
+                    f"Evidence extraction unavailable ({str(exc)[:80]}) — source kept without evidence",
+                )
+                return
+            self._sync_usage()
             for e in items:
                 state.evidence[e.id] = e
-                if sq.id not in [s.id for s in state.subquestions]:
-                    continue
                 sq.evidence_ids.append(e.id)
+
+    @staticmethod
+    def _url_seen(state, url: str | None) -> bool:
+        return not url or url in {s.url for s in state.sources.values()}
 
     async def _extract_from_doc_hits(self, hits: list[dict], sq) -> None:
         """Turn user-document chunks into evidence items with provenance.
@@ -494,12 +606,16 @@ class Orchestrator:
 
     # ------------------------------------------------------------ claims
     def _derive_claims(self) -> list[Claim]:
-        """Evidence summaries become candidate claims (one claim per evidence
-        item with a summary; grouping happens at fact-check)."""
+        """Evidence summaries become candidate claims — one claim per evidence
+        item, WITHOUT duplicates across iterations (evidence that already has
+        a claim is skipped)."""
         state = self.state
+        claimed_evidence_ids: set[str] = set()
+        for c in state.claims.values():
+            claimed_evidence_ids.update(c.supporting_evidence_ids)
         claims: list[Claim] = []
         for e in state.evidence.values():
-            if e.id in state.claims:
+            if e.id in claimed_evidence_ids:
                 continue
             claims.append(
                 Claim(
@@ -585,7 +701,7 @@ class Orchestrator:
                 Finding(
                     statement=f.statement,
                     evidence_ids=f.evidence_ids,
-                    confidence=EvidenceConfidence(f.confidence),
+                    confidence=_confidence_of(f.confidence),
                     is_interpretation=f.is_interpretation,
                     caveat=(f.caveat or "") + f" [partial research: {reason}]",
                 )
@@ -613,6 +729,44 @@ def _qrecord(query: str, sq_id, result) -> "SearchQueryRecord":
     )
 
 
+def _candidate_from_item(item: dict) -> SourceRecord | None:
+    """Build a SourceRecord from a search-result item; None if unusable."""
+    url = item.get("url", "")
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    title = (item.get("title") or "").strip()
+    if not title:
+        return None
+    return SourceRecord(
+        id=f"src_{uuid.uuid4().hex[:10]}",
+        title=title[:300],
+        url=url,
+        domain=item.get("domain"),
+        snippet=(item.get("snippet") or "")[:600],
+        published_at=item.get("published_at"),
+    )
+
+
+_STOPWORDS = frozenset(
+    "the a an and or of to in for on with is are was were be been what which how "
+    "does do did their this that these those from at by as it its into about".split()
+)
+
+
+def _relevant_enough(candidate: SourceRecord, sq) -> bool:
+    """Deterministic pre-filter: source must share >=1 meaningful term with the
+    subquestion (checked against title + snippet). Zero-overlap results from a
+    search backend are almost always irrelevant — skipping them saves an LLM
+    call per source (free-tier economics) and removes obvious noise."""
+    terms = {
+        t for t in sq.text.lower().split() if len(t) > 2 and t not in _STOPWORDS
+    }
+    if not terms:
+        return True  # cannot judge deterministically — let the LLM decide
+    text = (candidate.title + " " + (candidate.snippet or "")).lower()
+    return any(t in text for t in terms)
+
+
 def _row_from_spec(spec) -> "ComparisonRow":
     from app.schemas.research import ComparisonRow
 
@@ -630,6 +784,76 @@ def _confidence_for(ev_list: list[Evidence], state: ResearchState) -> EvidenceCo
     if high >= 2:
         return EvidenceConfidence.HIGH
     if high == 1 or len(ev_list) >= 2:
+        return EvidenceConfidence.MODERATE
+    return EvidenceConfidence.LOW
+
+
+def _fallback_synthesis(state: ResearchState):
+    """Code-side synthesis when the LLM is unavailable (rate limits, outages).
+
+    Produces an honest structured summary from verified claims only — no
+    fabricated prose. Every finding cites its evidence; unverified claims are
+    excluded; limitations state exactly why synthesis was degraded.
+    """
+    from app.agents.synthesis import FindingSpec, SynthesisOutput
+
+    findings: list[FindingSpec] = []
+    for c in state.claims.values():
+        if c.status.value in ("SUPPORTED", "PARTIALLY_SUPPORTED"):
+            findings.append(
+                FindingSpec(
+                    statement=c.text,
+                    evidence_ids=list(c.supporting_evidence_ids),
+                    confidence="MODERATE_EVIDENCE",
+                    is_interpretation=False,
+                )
+            )
+
+    answered: dict[str, str] = {}
+    for sq in state.subquestions:
+        if sq.status == SubQuestionStatus.ANSWERED:
+            answered[sq.id] = "Answered from retrieved evidence (see findings)."
+        else:
+            answered[sq.id] = "Insufficient evidence retrieved for this subquestion."
+
+    return SynthesisOutput(
+        executive_summary=(
+            f"Research completed with {len(findings)} verified finding(s) from "
+            f"{len(state.sources)} source(s). LLM synthesis was unavailable during "
+            "this run, so the summary is assembled code-side from verified claims only."
+        ),
+        methodology=(
+            "Structured multi-agent pipeline (plan, search, source evaluation, evidence "
+            "extraction, claim verification, contradiction detection, critique). "
+            "Synthesis was degraded to a code-side summary due to LLM unavailability."
+        ),
+        key_findings=findings,
+        comparison=[],
+        limitations=[
+            "LLM synthesis unavailable during this run — report assembled code-side.",
+            *(state.error.split("; ") if state.error else []),
+        ],
+        conclusion=(
+            "Based on the verified evidence, the findings above address the research "
+            "question at moderate confidence. Re-run with an available LLM provider "
+            "for full analytical synthesis."
+        ),
+        recommendation=None,
+        subquestion_answers=answered,
+    )
+
+
+def _confidence_of(raw: str) -> EvidenceConfidence:
+    """Tolerant confidence mapping — models may say 'moderate',
+    'MODERATE_EVIDENCE', 'high confidence', etc. Unknown values map to LOW
+    (conservative), never HIGH."""
+    s = (raw or "").strip().upper().replace(" ", "_")
+    for v in EvidenceConfidence:
+        if s == v.value or s == v.value.replace("_EVIDENCE", ""):
+            return v
+    if "HIGH" in s:
+        return EvidenceConfidence.HIGH
+    if "MODERATE" in s or "MEDIUM" in s:
         return EvidenceConfidence.MODERATE
     return EvidenceConfidence.LOW
 

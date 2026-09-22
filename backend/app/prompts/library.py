@@ -62,6 +62,13 @@ def _lib() -> PromptLibrary:
                 "focused subquestions and define what evidence is required. "
                 "Subquestions must be answerable from external sources, non-overlapping, "
                 "and collectively sufficient to answer the original question. "
+                "Respond with EXACTLY this JSON shape — subquestions MUST be plain "
+                "strings, not objects:\n"
+                '{"research_goal": string, "question_type": "comparative"|"factual"|'
+                '"exploratory"|"how_to", "subquestions": [string, ...], '
+                '"required_evidence": [string, ...], "comparison_subjects": [string, ...], '
+                '"completion_criteria": [string, ...], "planned_queries": [string, ...]}'
+                "\nNo markdown fences, no commentary."
                 + UNTRUSTED_DATA_CONTRACT
             ),
             user_template=(
@@ -120,6 +127,29 @@ def _lib() -> PromptLibrary:
 
     lib.register(
         Prompt(
+            name="source_evaluator_batch",
+            version="1.0",
+            system=(
+                "You are the Source Evaluation Agent. TASK:source_evaluator. Assess a "
+                "BATCH of candidate sources for a subquestion. For EACH source (matched "
+                "by index), return: relevance to the subquestion (0-1), authority (0-1, "
+                "based on domain reputation and source type: official docs > academic > "
+                "reputable blog > unknown), whether primary, a realistic source_type "
+                "classification, and discard=true if the source is clearly irrelevant "
+                "or spam. You cannot verify publication date from metadata alone — do "
+                "not guess. Scores are heuristic aids; say so in reasoning. "
+                + UNTRUSTED_DATA_CONTRACT
+            ),
+            user_template=(
+                "Subquestion: {subquestion}\n"
+                "Candidate sources (UNTRUSTED metadata):\n{candidates_block}\n"
+                "Evaluate all sources as JSON."
+            ),
+        )
+    )
+
+    lib.register(
+        Prompt(
             name="evidence",
             version="1.2",
             system=(
@@ -153,6 +183,7 @@ def _lib() -> PromptLibrary:
                 "supports part of the claim or is indirect), CONTRADICTED (evidence "
                 "conflicts), INSUFFICIENT_EVIDENCE (no usable evidence). "
                 "Be conservative: unsupported claims must NEVER be upgraded to facts. "
+                "Keep each rationale to ONE short sentence (output budget is limited). "
                 + UNTRUSTED_DATA_CONTRACT
             ),
             user_template=(
@@ -170,8 +201,14 @@ def _lib() -> PromptLibrary:
                 "You are the Contradiction Detection Agent. TASK:contradiction. Compare "
                 "verified evidence items that address the same subquestion. When two "
                 "credible sources disagree, do NOT pick a winner. Identify: the "
-                "conflicting claims, both source ids, a possible reason for disagreement, "
-                "and what additional evidence would resolve it. "
+                "conflicting claims, both evidence ids, a possible reason for "
+                "disagreement, and what additional evidence would resolve it. "
+                "Respond with EXACTLY this JSON shape:\n"
+                '{"contradictions": [{"topic": string, "claim_a": string, '
+                '"evidence_id_a": string, "claim_b": string, "evidence_id_b": string, '
+                '"possible_reason": string, "resolving_evidence_needed": string}]}'
+                "\nUse the evidence ids from the input. If there are no contradictions, "
+                "return an empty list. No markdown fences, no commentary."
                 + UNTRUSTED_DATA_CONTRACT
             ),
             user_template=(
@@ -190,10 +227,10 @@ def _lib() -> PromptLibrary:
                 "state for: missing evidence, weak sources, unsupported claims, "
                 "duplicated findings, logical inconsistencies, overconfident "
                 "conclusions, and unanswered subquestions. "
-                "If quality is insufficient AND followup searches remain in budget, "
-                "set research_sufficient=false and propose specific followup queries. "
-                "Be strict but do not demand perfection — 'sufficient' means the "
-                "question can be answered with clearly-stated limitations. "
+                "If MOST subquestions have evidence and claims are verified, set "
+                "research_sufficient=true — do not demand perfection; 'sufficient' "
+                "means the question can be answered with clearly-stated limitations. "
+                "Only request followup research for genuinely unanswered subquestions. "
                 + UNTRUSTED_DATA_CONTRACT
             ),
             user_template=(
@@ -216,12 +253,22 @@ def _lib() -> PromptLibrary:
             system=(
                 "You are the Synthesis Agent. TASK:synthesis. Combine VERIFIED evidence "
                 "into a coherent answer to the original question. Rules: (1) Only use "
-                "evidence marked SUPPORTED or PARTIALLY_SUPPORTED — cite by evidence id. "
-                "(2) Mark interpretations as is_interpretation=true. (3) State "
-                "uncertainty explicitly: use LOW_EVIDENCE / INSUFFICIENT_EVIDENCE "
+                "evidence/claims marked SUPPORTED or PARTIALLY_SUPPORTED — cite by "
+                "evidence id. (2) Mark interpretations as is_interpretation=true. (3) "
+                "State uncertainty explicitly: use LOW_EVIDENCE / INSUFFICIENT_EVIDENCE "
                 "confidence where appropriate rather than inventing answers. (4) For "
                 "comparative questions, produce per-subject comparison rows. "
-                "(5) Answer subquestions individually, then conclude. "
+                "Respond with EXACTLY this JSON shape:\n"
+                '{"executive_summary": string, "methodology": string, '
+                '"key_findings": [{"statement": string, "evidence_ids": [string], '
+                '"confidence": "HIGH_EVIDENCE"|"MODERATE_EVIDENCE"|"LOW_EVIDENCE"|'
+                '"INSUFFICIENT_EVIDENCE", "is_interpretation": bool, "caveat": string|null}], '
+                '"comparison": [{"subject": string, "criteria": {string: string}, '
+                '"advantages": [string], "disadvantages": [string], "evidence_ids": [string]}], '
+                '"limitations": [string], "conclusion": string, "recommendation": string|null, '
+                '"subquestion_answers": {subquestion_id: string}}'
+                "\nkey_findings MUST be a flat list at the top level. No markdown fences, "
+                "no commentary."
                 + UNTRUSTED_DATA_CONTRACT
             ),
             user_template=(

@@ -16,6 +16,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import json
+import time
 from typing import Any, TypeVar
 
 import httpx
@@ -28,6 +29,49 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class RateLimiter:
+    """Adaptive rate limiter for LLM calls.
+
+    Two mechanisms:
+      1. Global minimum interval between requests (all callers serialized).
+      2. Token-aware pacing: the client records `x-ratelimit-remaining-tokens`
+         and `x-ratelimit-reset-tokens` from each response; when headroom is
+         too low for the next call, acquire() waits for the reset window.
+         This maximizes throughput within the provider's REAL token budget
+         instead of guessing a fixed interval.
+    """
+
+    def __init__(self, min_interval: float, min_headroom_tokens: int = 3000) -> None:
+        self.min_interval = max(0.0, min_interval)
+        self.min_headroom_tokens = min_headroom_tokens
+        self._last_call = 0.0
+        self._lock = asyncio.Lock()
+        self._remaining_tokens = 10**9
+        self._reset_seconds = 0.0
+
+    def observe(self, remaining_tokens: int, reset_seconds: float) -> None:
+        """Called by the client after each response with provider headers."""
+        self._remaining_tokens = remaining_tokens
+        self._reset_seconds = reset_seconds
+
+    async def acquire(self) -> None:
+        if self.min_interval <= 0 and self._remaining_tokens > self.min_headroom_tokens:
+            return
+        async with self._lock:
+            # token-aware pacing: not enough headroom → wait for reset window
+            if self._remaining_tokens <= self.min_headroom_tokens and self._reset_seconds > 0:
+                wait = self._reset_seconds + 0.5
+                logger.info("llm_token_pacing", waiting_for_reset=round(wait, 1))
+                await asyncio.sleep(wait)
+                self._remaining_tokens = 10**9  # assume reset restored headroom
+                self._reset_seconds = 0.0
+            now = time.monotonic()
+            wait_for = self._last_call + self.min_interval - now
+            if wait_for > 0:
+                await asyncio.sleep(wait_for)
+            self._last_call = time.monotonic()
 
 
 class UsageReport(BaseModel):
@@ -120,12 +164,34 @@ class OpenAICompatibleClient(LLMClient):
         *,
         timeout: int = 60,
         max_retries: int = 2,
+        min_interval: float = 0.0,
+        fallback_models: list[str] | None = None,
     ) -> None:
         super().__init__(model)
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
+        # Fallback chain: free-tier model buckets are PER-MODEL — when the
+        # primary is rate-limited, the next model (separate bucket) takes over.
+        self.fallback_models = fallback_models or []
+        self._model_index = 0
+        self._limiter = RateLimiter(min_interval)
+
+    @property
+    def current_model(self) -> str:
+        models = [self.model] + self.fallback_models
+        return models[self._model_index % len(models)]
+
+    def _advance_model(self) -> bool:
+        """Move to the next fallback model. False when the chain is exhausted."""
+        if self._model_index >= len(self.fallback_models):
+            return False
+        self._model_index += 1
+        logger.info(
+            "llm_fallback_switch", from_model=self.model, to_model=self.current_model
+        )
+        return True
 
     async def complete(
         self,
@@ -141,22 +207,63 @@ class OpenAICompatibleClient(LLMClient):
             "temperature": settings.LLM_TEMPERATURE if temperature is None else temperature,
             "max_tokens": settings.LLM_MAX_OUTPUT_TOKENS if max_tokens is None else max_tokens,
         }
+        if settings.LLM_REASONING_EFFORT and _supports_reasoning_effort(self.current_model):
+            # gpt-oss reasoning models: cut chain-of-thought token burn.
+            # NOT sent for models that reject it (qwen, compound, llama…).
+            payload["reasoning_effort"] = settings.LLM_REASONING_EFFORT
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
+        # Free-tier 429s: first retry within the model's bucket (capped waits),
+        # then fall through the fallback chain (separate per-model buckets).
+        rate_limit_retries = 2
+        while True:
             try:
+                await self._limiter.acquire()
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     resp = await client.post(
-                        f"{self.base_url}/chat/completions", json=payload, headers=headers
+                        f"{self.base_url}/chat/completions",
+                        json={**payload, "model": self.current_model},
+                        headers=headers,
                     )
                 if resp.status_code == 429:
-                    raise LLMError("rate limited by provider", retryable=True)
+                    retry_after = _retry_after_seconds(resp.headers)
+                    last_error = LLMError(
+                        f"rate limited ({retry_after:.0f}s)", retryable=True
+                    )
+                    if rate_limit_retries > 0:
+                        rate_limit_retries -= 1
+                        self.usage.retries += 1
+                        logger.warning(
+                            "llm_rate_limited",
+                            model=self.current_model,
+                            retry_after=retry_after,
+                            retries_left=rate_limit_retries,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+                    # model bucket drained → try the fallback chain
+                    if self._advance_model():
+                        rate_limit_retries = 2
+                        continue
+                    raise last_error
                 if resp.status_code >= 500:
-                    raise LLMError(f"provider server error {resp.status_code}", retryable=True)
+                    last_error = LLMError(f"provider server error {resp.status_code}", retryable=True)
+                    if rate_limit_retries > 0:
+                        rate_limit_retries -= 1
+                        self.usage.retries += 1
+                        await asyncio.sleep(0.5 * (2**self.max_retries))
+                        continue
+                    raise last_error
                 if resp.status_code >= 400:
+                    # Self-healing: if the model rejected a parameter we sent
+                    # (e.g. reasoning_effort on a non-reasoning fallback model),
+                    # strip it and retry once — handles provider API drift
+                    # across the fallback chain automatically.
+                    if _strip_rejected_param(payload, resp.text):
+                        continue
                     raise LLMError(
                         f"provider client error {resp.status_code}: {resp.text[:300]}",
                         retryable=False,
@@ -167,19 +274,92 @@ class OpenAICompatibleClient(LLMClient):
                 self.usage.completion_tokens += usage.get("completion_tokens", 0)
                 self.usage.total_tokens += usage.get("total_tokens", 0)
                 self.usage.calls += 1
+                # token-aware pacing: record provider rate-limit state
+                self._limiter.observe(
+                    remaining_tokens=_int_header(resp.headers, "x-ratelimit-remaining-tokens", 10**9),
+                    reset_seconds=_parse_reset_seconds(resp.headers.get("x-ratelimit-reset-tokens")),
+                )
                 return data["choices"][0]["message"]["content"] or ""
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
-                if attempt < self.max_retries:
+                if rate_limit_retries > 0:
+                    rate_limit_retries -= 1
                     self.usage.retries += 1
-                    await asyncio.sleep(0.5 * (2**attempt))
+                    await asyncio.sleep(1.0)
+                else:
+                    raise LLMError(f"LLM call failed after retries: {exc}", retryable=False)
             except LLMError as exc:
-                if exc.retryable and attempt < self.max_retries:
-                    self.usage.retries += 1
-                    await asyncio.sleep(0.5 * (2**attempt))
-                    continue
-                raise
-        raise LLMError(f"LLM call failed after retries: {last_error}", retryable=False)
+                if exc is last_error or not exc.retryable:
+                    raise
+                # retryable non-429 errors fall through to the next attempt
+
+
+def _supports_reasoning_effort(model: str) -> bool:
+    """reasoning_effort is only accepted by reasoning models (gpt-oss family)."""
+    m = model.lower()
+    return "gpt-oss" in m
+
+
+def _strip_rejected_param(payload: dict[str, Any], error_text: str) -> bool:
+    """Remove a payload parameter the provider rejected; True if stripped.
+
+    Handles provider API drift: a 400 mentioning an unknown/unsupported
+    parameter (by name) gets that parameter removed and the call retried.
+    """
+    for param in list(payload.keys()):
+        if param in ("model", "messages"):
+            continue
+        if param in error_text and (
+            "not supported" in error_text
+            or "unknown" in error_text
+            or "does not support" in error_text
+            or "unexpected" in error_text
+            or "invalid" in error_text
+        ):
+            payload.pop(param)
+            logger.info("llm_param_stripped", param=param)
+            return True
+    return False
+
+
+def _retry_after_seconds(headers: httpx.Headers) -> float:
+    """Parse Retry-After; default to a conservative free-tier wait.
+
+    Capped at 30s: when the token window is drained, a longer wait still
+    cannot succeed before the refill — the client retries instead of
+    stalling for minutes.
+    """
+    raw = headers.get("retry-after")
+    if raw:
+        try:
+            return min(30.0, max(1.0, float(raw)))
+        except ValueError:
+            pass
+    return 15.0
+
+
+def _int_header(headers: httpx.Headers, name: str, default: int) -> int:
+    raw = headers.get(name)
+    if raw:
+        try:
+            return int(float(raw))
+        except ValueError:
+            pass
+    return default
+
+
+def _parse_reset_seconds(raw: str | None) -> float:
+    """Parse Groq's reset format like '929ms', '2.5s', '30m14.4s' → seconds."""
+    if not raw:
+        return 0.0
+    raw = raw.strip().lower()
+    total = 0.0
+    import re
+
+    for value, unit in re.findall(r"([\d.]+)(ms|s|m|h)", raw):
+        v = float(value)
+        total += v / 1000 if unit == "ms" else v * 60 if unit == "m" else v * 3600 if unit == "h" else v
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +368,9 @@ class OpenAICompatibleClient(LLMClient):
 def extract_json(raw: str) -> Any:
     """Extract a JSON object/array from a model response.
 
-    Handles: bare JSON, ```json fences, and leading/trailing prose.
-    Raises ValueError when no parsable JSON exists.
+    Handles: bare JSON, ```json fences, leading/trailing prose, and — as a
+    last resort — *truncated* JSON (output token cutoff mid-array), repaired
+    by closing open structures. Raises ValueError when nothing is parsable.
     """
     text = raw.strip()
     if text.startswith("```"):
@@ -203,7 +384,45 @@ def extract_json(raw: str) -> Any:
     ends = [i for i in (text.rfind("}"), text.rfind("]")) if i != -1]
     if not ends:
         raise ValueError("no JSON terminator found in response")
-    return json.loads(text[min(starts) : max(ends) + 1])
+    candidate = text[min(starts) : max(ends) + 1]
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return _repair_truncated_json(candidate)
+
+
+def _repair_truncated_json(candidate: str) -> Any:
+    """Repair JSON truncated by an output-token cutoff.
+
+    Scans open brackets/braces (string-aware) and closes them, then parses.
+    Trailing incomplete items are dropped — partial-but-valid output beats
+    total failure, and downstream agents handle partial lists gracefully.
+    """
+    opens: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in candidate:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_string:
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            opens.append(ch)
+        elif ch in "}]" and opens:
+            opens.pop()
+    repaired = candidate
+    if in_string:
+        repaired += '"'
+    for ch in reversed(opens):
+        repaired += "}" if ch == "{" else "]"
+    return json.loads(repaired)
 
 
 def _find_task_marker(system: str) -> str | None:
@@ -666,12 +885,17 @@ _MOCK_HANDLERS = {
 _llm_instance: LLMClient | None = None
 
 
+def _fallback_list(raw: str) -> list[str]:
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
 def get_llm_client() -> LLMClient:
     """Build (once) the configured LLM client. Provider switchable via env."""
     global _llm_instance
     if _llm_instance is not None:
         return _llm_instance
     settings = get_settings()
+    fallbacks = _fallback_list(settings.LLM_FALLBACK_MODELS)
     if settings.LLM_PROVIDER == "mock":
         _llm_instance = MockLLMClient()
     elif settings.LLM_PROVIDER == "groq":
@@ -683,6 +907,8 @@ def get_llm_client() -> LLMClient:
             base_url="https://api.groq.com/openai/v1",
             timeout=settings.LLM_TIMEOUT_SECONDS,
             max_retries=settings.LLM_MAX_RETRIES,
+            min_interval=settings.LLM_MIN_INTERVAL_SECONDS,
+            fallback_models=fallbacks,
         )
     else:  # openai
         if not settings.LLM_API_KEY:
@@ -693,6 +919,8 @@ def get_llm_client() -> LLMClient:
             base_url="https://api.openai.com/v1",
             timeout=settings.LLM_TIMEOUT_SECONDS,
             max_retries=settings.LLM_MAX_RETRIES,
+            min_interval=settings.LLM_MIN_INTERVAL_SECONDS,
+            fallback_models=fallbacks,
         )
     logger.info("llm_client_ready", provider=_llm_instance.provider_name, model=_llm_instance.model)
     return _llm_instance

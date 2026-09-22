@@ -1,7 +1,7 @@
 """Synthesis Agent — combines verified evidence into the draft report."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from app.agents.base import BaseAgent
 from app.schemas.research import (
@@ -16,8 +16,12 @@ from app.schemas.research import (
 
 
 class FindingSpec(BaseModel):
-    statement: str = Field(min_length=5, max_length=1000)
-    evidence_ids: list[str] = Field(default_factory=list)
+    statement: str = Field(
+        validation_alias=AliasChoices("statement", "finding", "text", "claim"),
+        min_length=5,
+        max_length=1000,
+    )
+    evidence_ids: list[str] = Field(default_factory=list, validation_alias=AliasChoices("evidence_ids", "evidence", "citations"))
     confidence: str = "LOW_EVIDENCE"
     is_interpretation: bool = False
     caveat: str | None = None
@@ -40,6 +44,34 @@ class SynthesisOutput(BaseModel):
     conclusion: str = Field(min_length=10, max_length=3000)
     recommendation: str | None = None
     subquestion_answers: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_loose_shapes(cls, data: object) -> object:
+        """Tolerant parsing for real-model output variance.
+
+        Handles: key_findings under 'findings'/'findings_list'; the model's
+        per-subquestion dict shape ('subquestions': {id: {answer, ...}})
+        flattened into subquestion_answers.
+        """
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        if not d.get("key_findings") and isinstance(d.get("findings"), list):
+            d["key_findings"] = d["findings"]
+        # per-subquestion dict shape → flat answers
+        subs = d.get("subquestions")
+        if isinstance(subs, dict) and not d.get("subquestion_answers"):
+            answers: dict[str, str] = {}
+            for sq_id, val in subs.items():
+                if isinstance(val, str):
+                    answers[sq_id] = val
+                elif isinstance(val, dict):
+                    text = val.get("answer") or val.get("summary") or ""
+                    if isinstance(text, str) and text.strip():
+                        answers[sq_id] = text.strip()
+            d["subquestion_answers"] = answers
+        return d
 
 
 class SynthesisAgent(BaseAgent):

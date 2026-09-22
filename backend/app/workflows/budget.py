@@ -20,6 +20,7 @@ class ResearchBudget:
     max_sources: int
     max_tokens: int
     max_runtime_seconds: int
+    max_llm_calls: int = 60
     started_at: float = field(default_factory=time.monotonic)
 
     @classmethod
@@ -31,6 +32,7 @@ class ResearchBudget:
             max_sources=s.RESEARCH_MAX_SOURCES,
             max_tokens=s.RESEARCH_MAX_TOKENS,
             max_runtime_seconds=s.RESEARCH_MAX_RUNTIME_SECONDS,
+            max_llm_calls=s.RESEARCH_MAX_LLM_CALLS,
         )
 
     # -- soft checks (agent may still gracefully finish) --
@@ -40,6 +42,10 @@ class ResearchBudget:
     def can_add_source(self, state: ResearchState) -> bool:
         return len(state.sources) < self.max_sources
 
+    def can_call_llm(self, state: ResearchState) -> bool:
+        """Free-tier protection: stop LLM-driven steps when call budget is out."""
+        return state.llm_calls < self.max_llm_calls
+
     # -- hard checks (abort workflow) --
     def check_hard_limits(self, state: ResearchState) -> None:
         self.check_runtime()
@@ -48,6 +54,12 @@ class ResearchBudget:
                 f"token budget exhausted ({state.tokens_used}/{self.max_tokens})",
                 budget_type="tokens",
                 limit=self.max_tokens,
+            )
+        if state.llm_calls > self.max_llm_calls:
+            raise BudgetExceededError(
+                f"LLM call budget exhausted ({state.llm_calls}/{self.max_llm_calls})",
+                budget_type="llm_calls",
+                limit=self.max_llm_calls,
             )
 
     def check_runtime(self) -> None:
@@ -69,6 +81,8 @@ class ResearchBudget:
             "max_sources": self.max_sources,
             "tokens_used": state.tokens_used,
             "max_tokens": self.max_tokens,
+            "llm_calls": state.llm_calls,
+            "max_llm_calls": self.max_llm_calls,
             "runtime_seconds": int(time.monotonic() - self.started_at),
             "max_runtime_seconds": self.max_runtime_seconds,
         }

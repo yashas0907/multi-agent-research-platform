@@ -1,21 +1,38 @@
 """Evidence Extraction Agent — pulls cited evidence from (untrusted) source text."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from app.agents.base import BaseAgent, new_id
 from app.schemas.research import Evidence, SourceRecord, SubQuestion
 
 
+def _accept_bare_list(key: str):
+    """Tolerant parsing: models often return a bare JSON array instead of
+    {key: [...]} — wrap it before validation instead of failing."""
+
+    def _before(data: object) -> object:
+        if isinstance(data, list):
+            return {key: data}
+        return data
+
+    return model_validator(mode="before")(_before)
+
+
 class ExtractedEvidence(BaseModel):
-    claim_summary: str = Field(min_length=4, max_length=500)
-    source_location: str | None = None
+    claim_summary: str = Field(
+        validation_alias=AliasChoices("claim_summary", "claim", "summary", "statement"),
+        min_length=4,
+        max_length=500,
+    )
+    source_location: str | None = Field(default=None, validation_alias=AliasChoices("source_location", "location", "section"))
     snippet: str = Field(min_length=4, max_length=1500)
     confidence: str = "moderate"
 
 
 class EvidenceList(BaseModel):
     evidence: list[ExtractedEvidence] = Field(default_factory=list, max_length=15)
+    _wrap = _accept_bare_list("evidence")
 
 
 class EvidenceAgent(BaseAgent):
@@ -28,7 +45,9 @@ class EvidenceAgent(BaseAgent):
         source: SourceRecord,
         subquestion: SubQuestion,
     ) -> list[Evidence]:
-        text = (source.content_text or source.snippet or "")[:8000]
+        # 2200 chars ≈ 550 tokens: enough context for extraction while staying
+        # well inside free-tier token-per-minute budgets.
+        text = (source.content_text or source.snippet or "")[:2200]
         if not text.strip():
             return []
 

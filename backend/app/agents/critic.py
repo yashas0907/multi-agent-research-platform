@@ -1,7 +1,7 @@
 """Critic Agent — quality gate with the power to request more research."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from app.agents.base import BaseAgent
 from app.schemas.research import (
@@ -15,12 +15,21 @@ from app.schemas.research import (
 )
 
 
+def _accept_bare_list(key: str):
+    def _before(data: object) -> object:
+        if isinstance(data, list):
+            return {key: data}
+        return data
+
+    return model_validator(mode="before")(_before)
+
+
 class CriticFindingSpec(BaseModel):
-    finding_type: str
+    finding_type: str = Field(validation_alias=AliasChoices("finding_type", "type", "category"))
     description: str = Field(min_length=5, max_length=800)
     severity: str = "medium"
     subquestion_id: str | None = None
-    suggested_followup_query: str | None = None
+    suggested_followup_query: str | None = Field(default=None, validation_alias=AliasChoices("suggested_followup_query", "followup_query", "suggested_query"))
 
 
 class CriticOutput(BaseModel):
@@ -28,6 +37,7 @@ class CriticOutput(BaseModel):
     research_sufficient: bool = False
     overall_assessment: str = "not evaluated"
     followup_queries: list[str] = Field(default_factory=list, max_length=5)
+    _wrap = _accept_bare_list("findings")
 
 
 class CriticAgent(BaseAgent):

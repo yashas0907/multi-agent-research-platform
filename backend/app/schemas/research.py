@@ -9,7 +9,7 @@ import enum
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +96,23 @@ class ResearchPlan(BaseModel):
     comparison_subjects: list[str] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)
     planned_queries: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_loose_shapes(cls, data: object) -> object:
+        """Tolerant parsing: models sometimes return subquestions as objects
+        ({'question': ...} / {'text': ...}) — extract the string."""
+        if isinstance(data, dict) and isinstance(data.get("subquestions"), list):
+            fixed: list[str] = []
+            for item in data["subquestions"]:
+                if isinstance(item, str):
+                    fixed.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("question") or item.get("text") or item.get("subquestion") or ""
+                    if isinstance(text, str) and text.strip():
+                        fixed.append(text.strip())
+            data = {**data, "subquestions": fixed}
+        return data
 
     @field_validator("subquestions")
     @classmethod

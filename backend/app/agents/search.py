@@ -1,21 +1,32 @@
 """Search Agent — generates effective, non-redundant queries per subquestion."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from app.agents.base import AgentContext, BaseAgent
 from app.schemas.research import ResearchState, SubQuestion
 
 
+def _accept_bare_list(key: str):
+    def _before(data: object) -> object:
+        if isinstance(data, list):
+            # models often return a bare list of plain strings
+            return {key: [{"query": q} if isinstance(q, str) else q for q in data]}
+        return data
+
+    return model_validator(mode="before")(_before)
+
+
 class SearchQueries(BaseModel):
-    """Structured output of the Search Agent."""
+    """Structured output of the Search Agent. Accepts objects or bare strings."""
 
     queries: list[QuerySpec] = Field(default_factory=list, max_length=10)
+    _wrap = _accept_bare_list("queries")
 
 
 class QuerySpec(BaseModel):
     query: str = Field(min_length=3, max_length=250)
-    reasoning: str = ""
+    reasoning: str = Field(default="", validation_alias=AliasChoices("reasoning", "reason", "rationale"))
     site: str | None = None  # restrict to a domain (optional)
     recency_months: int | None = Field(default=None, ge=1, le=60)
 
