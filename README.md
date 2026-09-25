@@ -194,7 +194,10 @@ INSUFFICIENT_EVIDENCE  no usable evidence → report says so
   completeness, honesty (unanswerable questions must NOT get confident answers)
 
 Latest offline run (mock providers): Recall@3 0.80 · Precision@3 0.27 ·
-context relevance 0.69 · source trust 0.70 · completeness 0.70 · honesty 0.50.
+context relevance 0.69 · faithfulness 1.00 (verbatim grounding) · citation
+integrity 1.00 · source trust 0.59 · completeness 0.38 · honesty 0.50.
+Completeness is lower by design now: free-tier depth profiles cap LLM calls,
+so fewer subquestions reach `answered` per run (real-LLM runs answer 5/5).
 Precision is honestly low by construction (closely-related corpus entries are
 near-misses), and the offline mock LLM cannot semantically detect
 unanswerable questions — both noted in the results JSON. These are the real

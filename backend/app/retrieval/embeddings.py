@@ -41,11 +41,14 @@ class EmbeddingProvider(abc.ABC):
 
 
 class MockEmbeddingProvider(EmbeddingProvider):
-    """Deterministic feature-hashing embeddings.
+    """Deterministic local embeddings — no network, no API key.
 
-    Each text is tokenized; token buckets get weights (with log-scaled
-    sublinear term frequency). Documents sharing tokens land near each other,
-    which gives the retriever meaningful behavior offline.
+    Feature hashing over BOTH whole words and character 3-4 grams (sub-word
+    robustness: 'evaluating' and 'evaluation' share n-grams, so documents
+    about the same concept land near each other even with different word
+    forms — stemming-like behavior without any model download). Vector
+    weights use log-scaled sublinear term frequency. Same provider for
+    indexing and querying keeps behavior stable.
     """
 
     name = "mock"
@@ -57,13 +60,27 @@ class MockEmbeddingProvider(EmbeddingProvider):
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return [self._embed(t) for t in texts]
 
+    def _features(self, text: str) -> list[str]:
+        import re
+
+        text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+        tokens = [t for t in text.split() if len(t) > 1]
+        if not tokens:
+            tokens = [text.strip()[:8] or "empty"]
+        feats: list[str] = []
+        for token in tokens:
+            feats.append(token)
+            # character 3-4 grams: sub-word robustness across word forms
+            padded = f"<{token}>"
+            for n in (3, 4):
+                for i in range(len(padded) - n + 1):
+                    feats.append(padded[i : i + n])
+        return feats
+
     def _embed(self, text: str) -> list[float]:
         vec = [0.0] * self.dim
-        tokens = [t for t in text.lower().split() if len(t) > 2]
-        if not tokens:
-            tokens = [text.lower()[:8] or "empty"]
-        for token in tokens:
-            h = int.from_bytes(hashlib.sha256(token.encode()).digest()[:8], "big")
+        for feat in self._features(text):
+            h = int.from_bytes(hashlib.sha256(feat.encode()).digest()[:8], "big")
             idx = h % self.dim
             sign = 1.0 if (h >> 63) & 1 == 0 else -1.0
             vec[idx] += sign * 1.0

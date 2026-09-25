@@ -60,7 +60,7 @@ class Retriever:
             query_vec,
             top_k=top_k * fetch_multiplier,
             document_ids=document_ids,
-            min_score=0.0,  # gate after re-ranking, not before
+            min_score=-1.0,  # no pre-gate: the combined-score gate below is the quality control
         )
         if not candidates:
             return []

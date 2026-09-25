@@ -50,9 +50,10 @@ class VectorStore(abc.ABC):
         *,
         top_k: int = 5,
         document_ids: list[str] | None = None,
-        min_score: float = 0.0,
+        min_score: float = -1.0,
     ) -> list[StoredChunk]:
-        ...
+        """min_score: gate AFTER sorting (-1.0 = no gate; the retriever's
+        combined-score gating is the quality control, not this filter)."""
 
     @abc.abstractmethod
     async def delete_document(self, document_id: str) -> int:
@@ -102,7 +103,7 @@ class SQLiteVectorStore(VectorStore):
         *,
         top_k: int = 5,
         document_ids: list[str] | None = None,
-        min_score: float = 0.0,
+        min_score: float = -1.0,
     ) -> list[StoredChunk]:
         maker = await get_sessionmaker()
         async with maker() as session:
