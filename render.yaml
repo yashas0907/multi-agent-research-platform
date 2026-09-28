@@ -29,7 +29,7 @@ services:
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
       - key: LLM_FALLBACK_MODELS
-        value: qwen/qwen3.8-27b,groq/compound-mini
+        value: qwen/qwen3.8-27b,openai/gpt-oss-20b
       - key: LLM_MIN_INTERVAL_SECONDS
         value: "8"
       - key: LLM_REASONING_EFFORT

@@ -217,8 +217,10 @@ class OpenAICompatibleClient(LLMClient):
         }
         last_error: Exception | None = None
         # Free-tier 429s: first retry within the model's bucket (capped waits),
-        # then fall through the fallback chain (separate per-model buckets).
+        # then fall through the fallback chain (separate per-model buckets),
+        # then one bounded reset back to the primary (limits recover).
         rate_limit_retries = 2
+        chain_resets = 0
         while True:
             try:
                 await self._limiter.acquire()
@@ -248,6 +250,15 @@ class OpenAICompatibleClient(LLMClient):
                     if self._advance_model():
                         rate_limit_retries = 2
                         continue
+                    # chain exhausted → rate limits recover (~1 min): reset to
+                    # the primary and make one final attempt (bounded).
+                    if chain_resets < 1:
+                        chain_resets += 1
+                        self._model_index = 0
+                        rate_limit_retries = 2
+                        logger.info("llm_chain_reset", to_model=self.current_model)
+                        await asyncio.sleep(30)
+                        continue
                     raise last_error
                 if resp.status_code >= 500:
                     last_error = LLMError(f"provider server error {resp.status_code}", retryable=True)
@@ -257,6 +268,15 @@ class OpenAICompatibleClient(LLMClient):
                         await asyncio.sleep(0.5 * (2**self.max_retries))
                         continue
                     raise last_error
+                if resp.status_code == 404 and "does not exist" in resp.text:
+                    # model not on this account (catalogs differ per key/tier):
+                    # skip it and try the next fallback — never fail the session
+                    if self._advance_model():
+                        continue
+                    raise LLMError(
+                        f"no accessible model in chain: {resp.text[:200]}",
+                        retryable=False,
+                    )
                 if resp.status_code >= 400:
                     # Self-healing: if the model rejected a parameter we sent
                     # (e.g. reasoning_effort on a non-reasoning fallback model),

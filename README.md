@@ -334,7 +334,7 @@ demonstrable and CI-reproducible. For real research: set `LLM_PROVIDER`,
 LLM_PROVIDER=groq
 GROQ_API_KEY=<your free key from console.groq.com>
 GROQ_MODEL=openai/gpt-oss-120b
-LLM_FALLBACK_MODELS=qwen/qwen3.8-27b,groq/compound-mini
+LLM_FALLBACK_MODELS=qwen/qwen3.8-27b,openai/gpt-oss-20b
 LLM_MIN_INTERVAL_SECONDS=8
 LLM_REASONING_EFFORT=low
 EMBEDDING_PROVIDER=mock

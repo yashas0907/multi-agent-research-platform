@@ -101,17 +101,30 @@ class ResearchPlan(BaseModel):
     @classmethod
     def _coerce_loose_shapes(cls, data: object) -> object:
         """Tolerant parsing: models sometimes return subquestions as objects
-        ({'question': ...} / {'text': ...}) — extract the string."""
-        if isinstance(data, dict) and isinstance(data.get("subquestions"), list):
-            fixed: list[str] = []
-            for item in data["subquestions"]:
-                if isinstance(item, str):
-                    fixed.append(item)
-                elif isinstance(item, dict):
-                    text = item.get("question") or item.get("text") or item.get("subquestion") or ""
-                    if isinstance(text, str) and text.strip():
-                        fixed.append(text.strip())
-            data = {**data, "subquestions": fixed}
+        ({'question': ...} / {'text': ...}) or a numbered dict
+        ({'1': '...', '2': '...'}) — extract the strings."""
+        if isinstance(data, dict):
+            subs = data.get("subquestions")
+            if isinstance(subs, list):
+                fixed: list[str] = []
+                for item in subs:
+                    if isinstance(item, str):
+                        fixed.append(item)
+                    elif isinstance(item, dict):
+                        text = (
+                            item.get("question") or item.get("text")
+                            or item.get("subquestion") or ""
+                        )
+                        if isinstance(text, str) and text.strip():
+                            fixed.append(text.strip())
+                data = {**data, "subquestions": fixed}
+            elif isinstance(subs, dict):
+                values = [
+                    (v.get("question") if isinstance(v, dict) else v)
+                    for v in subs.values()
+                ]
+                fixed = [v for v in values if isinstance(v, str) and v.strip()]
+                data = {**data, "subquestions": fixed}
         return data
 
     @field_validator("subquestions")

@@ -111,6 +111,8 @@ async def research_events(
     session_id: str, after: int = Query(0, ge=0)
 ) -> TraceResponse:
     try:
+        if not await repository.exists(session_id):
+            raise NotFoundError(f"research session {session_id} not found")
         events = await repository.get_events(session_id, after_index=after)
     except NotFoundError as exc:
         raise _not_found(exc) from exc
