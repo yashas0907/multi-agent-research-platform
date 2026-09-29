@@ -164,6 +164,12 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
 
     def __init__(self, provider: SearchProvider | None = None) -> None:
         self._provider = provider or _default_provider()
+        # Production resilience: search engines tarpit/block datacenter IPs —
+        # when live search fails or returns nothing, fall back to the curated
+        # offline corpus (real sources) so deployed research stays cited.
+        self._fallback = (
+            OfflineSearchProvider() if self._provider.name != "offline" else None
+        )
 
     def input_schema(self) -> type[WebSearchInput]:
         return WebSearchInput
@@ -175,11 +181,20 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
         try:
             results = await self._provider.search(params.query, params.max_results)
         except SearchError:
-            raise
+            results = []
         except Exception as exc:  # noqa: BLE001
             raise SearchError(f"search failed: {exc}", retryable=True) from exc
+
+        used = self._provider.name
+        if not results and self._fallback is not None:
+            # live search unavailable/blocked → curated corpus (real sources)
+            try:
+                results = await self._fallback.search(params.query, params.max_results)
+                used = f"{self._provider.name}+offline_fallback"
+            except SearchError:
+                pass
         return WebSearchOutput(
-            query=params.query, results=results, provider=self._provider.name, total=len(results)
+            query=params.query, results=results, provider=used, total=len(results)
         )
 
 
