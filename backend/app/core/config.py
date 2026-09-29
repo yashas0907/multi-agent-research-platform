@@ -96,7 +96,14 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+        # Normalize: strip whitespace, brackets, quotes, and trailing slashes
+        # (browsers send bare origins — exact match must not fail on formatting).
+        cleaned = []
+        for o in self.CORS_ORIGINS.split(","):
+            o = o.strip().strip("[]\"'").strip().rstrip("/")
+            if o:
+                cleaned.append(o)
+        return cleaned
 
     @property
     def max_upload_bytes(self) -> int:
