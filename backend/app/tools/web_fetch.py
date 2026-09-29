@@ -116,7 +116,13 @@ class WebFetchTool(BaseTool[WebFetchInput, WebFetchOutput]):
         timeout = _OFFLINE_TIMEOUT if offline_mode else settings.WEB_FETCH_TIMEOUT_SECONDS
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; ResearchPlatform/1.0)",
+            # Wikipedia (and most reputable sites) 403 generic bot UAs from
+            # datacenter IPs — a browser-like UA with contact info complies
+            # with their policies.
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; ResearchPlatform/1.0; "
+                "+https://github.com/yashas0907/multi-agent-research-platform)"
+            ),
             "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
         }
         try:
