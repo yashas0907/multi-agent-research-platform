@@ -104,6 +104,8 @@ class DuckDuckGoSearchProvider(SearchProvider):
 
     Deliberately simple and best-effort: live search is a fallback for real
     deployments; the offline corpus is the reproducible default.
+    NOTE: DDG tarpits/blocks datacenter IPs (AWS/GCP/etc.) — production
+    deployments need the Wikipedia fallback below.
     """
 
     name = "duckduckgo"
@@ -125,6 +127,68 @@ class DuckDuckGoSearchProvider(SearchProvider):
             raise SearchError("search timed out", retryable=True) from exc
         except httpx.TransportError as exc:
             raise SearchError(f"search transport error: {exc}", retryable=True) from exc
+
+
+class WikipediaSearchProvider(SearchProvider):
+    """Wikipedia search — free, no key, works from datacenter IPs.
+
+    Reliable where DDG blocks: definitions, encyclopedic topics, general
+    knowledge. Returns real article metadata (title/URL/snippet).
+    """
+
+    name = "wikipedia"
+    ENDPOINT = "https://en.wikipedia.org/w/api.php"
+
+    async def search(self, query: str, max_results: int) -> list[WebSearchResultItem]:
+        import httpx
+
+        params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": str(max_results),
+            "format": "json",
+            "utf8": "1",
+            "origin": "*",
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=get_settings().WEB_FETCH_TIMEOUT_SECONDS,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (compatible; ResearchPlatform/1.0; "
+                        "+https://github.com/yashas0907/multi-agent-research-platform)"
+                    )
+                },
+            ) as client:
+                resp = await client.get(self.ENDPOINT, params=params)
+            if resp.status_code != 200:
+                raise SearchError(f"wikipedia returned {resp.status_code}", retryable=True)
+            data = resp.json()
+        except httpx.TimeoutException as exc:
+            raise SearchError("wikipedia search timed out", retryable=True) from exc
+        except httpx.TransportError as exc:
+            raise SearchError(f"wikipedia transport error: {exc}", retryable=True) from exc
+
+        from app.tools.web_fetch import strip_html
+
+        results: list[WebSearchResultItem] = []
+        for item in data.get("query", {}).get("search", []):
+            title = item.get("title", "").strip()
+            snippet = strip_html(item.get("snippet", ""))
+            if not title:
+                continue
+            slug = title.replace(" ", "_")
+            results.append(
+                WebSearchResultItem(
+                    title=title,
+                    url=f"https://en.wikipedia.org/wiki/{slug}",
+                    snippet=snippet[:400],
+                    source_type="documentation",
+                    domain="en.wikipedia.org",
+                )
+            )
+        return results
 
 
 def _parse_ddg_html(html: str, max_results: int) -> list[WebSearchResultItem]:
@@ -164,12 +228,14 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
 
     def __init__(self, provider: SearchProvider | None = None) -> None:
         self._provider = provider or _default_provider()
-        # Production resilience: search engines tarpit/block datacenter IPs —
-        # when live search fails or returns nothing, fall back to the curated
-        # offline corpus (real sources) so deployed research stays cited.
-        self._fallback = (
-            OfflineSearchProvider() if self._provider.name != "offline" else None
-        )
+        # Production resilience chain: search engines tarpit/block datacenter
+        # IPs — fall through Wikipedia (free, datacenter-friendly), then the
+        # curated offline corpus (real sources). Deployed research stays cited.
+        self._fallbacks: list[SearchProvider] = []
+        if self._provider.name != "wikipedia":
+            self._fallbacks.append(WikipediaSearchProvider())
+        if self._provider.name != "offline":
+            self._fallbacks.append(OfflineSearchProvider())
 
     def input_schema(self) -> type[WebSearchInput]:
         return WebSearchInput
@@ -186,13 +252,15 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
             raise SearchError(f"search failed: {exc}", retryable=True) from exc
 
         used = self._provider.name
-        if not results and self._fallback is not None:
-            # live search unavailable/blocked → curated corpus (real sources)
-            try:
-                results = await self._fallback.search(params.query, params.max_results)
-                used = f"{self._provider.name}+offline_fallback"
-            except SearchError:
-                pass
+        if not results:
+            for fb in self._fallbacks:
+                try:
+                    results = await fb.search(params.query, params.max_results)
+                except SearchError:
+                    continue
+                if results:
+                    used = f"{self._provider.name}+{fb.name}"
+                    break
         return WebSearchOutput(
             query=params.query, results=results, provider=used, total=len(results)
         )
