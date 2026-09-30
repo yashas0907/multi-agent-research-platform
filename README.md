@@ -431,3 +431,4 @@ frontend build on every push — fully offline, no secrets required.
 - Egress allowlist + authn/authz + per-user quotas
 - Re-ranking model (cross-encoder) for retrieval
 - Langfuse/OpenTelemetry exporter for traces
+
