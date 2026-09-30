@@ -134,13 +134,67 @@ class WikipediaSearchProvider(SearchProvider):
 
     Reliable where DDG blocks: definitions, encyclopedic topics, general
     knowledge. Returns real article metadata (title/URL/snippet).
+    For definitional queries ('what is X', 'definition of X'), the topic's
+    REST summary (the actual definition) is added as the top result.
     """
 
     name = "wikipedia"
     ENDPOINT = "https://en.wikipedia.org/w/api.php"
+    SUMMARY_ENDPOINT = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 
     async def search(self, query: str, max_results: int) -> list[WebSearchResultItem]:
         import httpx
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; ResearchPlatform/1.0; "
+                "+https://github.com/yashas0907/multi-agent-research-platform)"
+            )
+        }
+        results: list[WebSearchResultItem] = []
+
+        # definitional queries: the topic summary IS the answer's best source
+        topic = _definitional_topic(query)
+        if topic:
+            # single WORD (no spaces): Wikipedia has no article for dictionary
+            # words — Wiktionary (the free dictionary) is the right source.
+            if " " not in topic:
+                results.append(
+                    WebSearchResultItem(
+                        title=f"{topic} — Wiktionary (definition)",
+                        url=f"https://en.wiktionary.org/wiki/{topic.lower()}",
+                        snippet=f"Dictionary entry for the English word '{topic}' "
+                        "with part of speech, definition, and etymology.",
+                        source_type="documentation",
+                        domain="en.wiktionary.org",
+                    )
+                )
+            try:
+                async with httpx.AsyncClient(
+                    timeout=get_settings().WEB_FETCH_TIMEOUT_SECONDS, headers=headers
+                ) as client:
+                    resp = await client.get(
+                        self.SUMMARY_ENDPOINT + topic.replace(" ", "_")
+                    )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    title = data.get("title", topic)
+                    extract = data.get("extract", "")
+                    if extract:
+                        results.append(
+                            WebSearchResultItem(
+                                title=f"{title} — Wikipedia summary",
+                                url=data.get(
+                                    "content_urls", {}
+                                ).get("desktop", {}).get("page")
+                                or f"https://en.wikipedia.org/wiki/{topic.replace(' ', '_')}",
+                                snippet=extract[:400],
+                                source_type="documentation",
+                                domain="en.wikipedia.org",
+                            )
+                        )
+            except (httpx.TimeoutException, httpx.TransportError, ValueError):
+                pass  # summary unavailable — keyword search still runs
 
         params = {
             "action": "query",
@@ -153,13 +207,7 @@ class WikipediaSearchProvider(SearchProvider):
         }
         try:
             async with httpx.AsyncClient(
-                timeout=get_settings().WEB_FETCH_TIMEOUT_SECONDS,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (compatible; ResearchPlatform/1.0; "
-                        "+https://github.com/yashas0907/multi-agent-research-platform)"
-                    )
-                },
+                timeout=get_settings().WEB_FETCH_TIMEOUT_SECONDS, headers=headers
             ) as client:
                 resp = await client.get(self.ENDPOINT, params=params)
             if resp.status_code != 200:
@@ -172,11 +220,11 @@ class WikipediaSearchProvider(SearchProvider):
 
         from app.tools.web_fetch import strip_html
 
-        results: list[WebSearchResultItem] = []
+        seen_titles = {r.title for r in results}
         for item in data.get("query", {}).get("search", []):
             title = item.get("title", "").strip()
             snippet = strip_html(item.get("snippet", ""))
-            if not title:
+            if not title or title in seen_titles:
                 continue
             slug = title.replace(" ", "_")
             results.append(
@@ -188,7 +236,33 @@ class WikipediaSearchProvider(SearchProvider):
                     domain="en.wikipedia.org",
                 )
             )
-        return results
+        return results[:max_results]
+
+
+_DEFN_PATTERNS = ("what is", "what are", "definition of", "meaning of", "define")
+
+
+def _definitional_topic(query: str) -> str | None:
+    """Extract the topic term from a definitional query ('definition of blatant'
+    → 'blatant'; 'what is retrieval augmented generation' → that phrase)."""
+    q = query.strip().lower().rstrip("?").strip()
+    for pat in _DEFN_PATTERNS:
+        if q.startswith(pat):
+            topic = q[len(pat):].strip(" :\",'")
+            # drop trailing qualifiers like 'the word', 'standard dictionary definition of'
+            for filler in ("the word ", "standard dictionary definition of ", "dictionary "):
+                if topic.startswith(filler):
+                    topic = topic[len(filler):]
+            topic = topic.strip(" :\",'")
+            if 2 <= len(topic) <= 80:
+                return topic.title()
+    # 'X definition' / 'X meaning' (topic first)
+    for suffix in (" definition", " meaning"):
+        if q.endswith(suffix):
+            topic = q[: -len(suffix)].strip()
+            if 2 <= len(topic) <= 80 and " " not in topic:
+                return topic.title()
+    return None
 
 
 def _parse_ddg_html(html: str, max_results: int) -> list[WebSearchResultItem]:
