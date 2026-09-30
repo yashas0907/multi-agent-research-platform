@@ -60,3 +60,28 @@ Every evidence snippet must appear verbatim (or ≥ 80% 8-gram overlap) in the
 source text — enforced in `EvidenceAgent` at runtime. This is the
 anti-fabrication backstop and doubles as the faithfulness metric in
 evaluation.
+
+## Search resilience chain (live-deployment learnings)
+
+```
+web_search: DuckDuckGo ──(blocked/empty)──► Wikipedia ──(empty)──► offline corpus
+```
+
+Found during live deployment verification (Render, Oregon datacenter):
+
+1. **DuckDuckGo tarpits datacenter IPs** — HTML scraping times out (15s) from
+   cloud providers while working fine from residential IPs. Local testing
+   alone would never catch this.
+2. **Wikipedia API works from datacenters** — free, no key, reliable. Covers
+   encyclopedic topics; the REST summary endpoint supplies actual definitions
+   for `what is X` / `definition of X` queries.
+3. **Dictionary words have no Wikipedia article** — single-word definitional
+   queries also get the **Wiktionary** entry (the free dictionary), where
+   `blatant`, `obfuscate`, etc. actually live.
+4. **Evidence extraction window is relevance-picked** — wiki pages front-load
+   hundreds of chars of navigation; Wiktionary's definition of "blatant" sat
+   at char ~2200, right at a naive head-of-text window's edge. The 4000-char
+   window is now selected by keyword overlap with the subquestion.
+
+The chain guarantees every deployed research session has real, citable
+sources even when search engines block the datacenter.

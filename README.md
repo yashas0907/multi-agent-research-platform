@@ -137,10 +137,16 @@ crashing tool can never take the pipeline down.
 
 | Tool | Purpose |
 |---|---|
-| `web_search` | Offline curated corpus (default, reproducible) or live DuckDuckGo |
-| `web_fetch` | Sanitized page text; treats content as **untrusted data**; heuristic injection flag |
+| `web_search` | **Search resilience chain**: DuckDuckGo → Wikipedia (datacenter-friendly) → curated offline corpus — every stage returns real sources |
+| `web_fetch` | Sanitized page text; treats content as **untrusted data**; heuristic injection flag; compliant browser-like UA (reputable sites 403 generic bots from datacenter IPs) |
 | `vector_search` | Hybrid search over user documents |
 | `calculator` | AST-whitelisted arithmetic for numeric claims (no `eval`) |
+
+Search chain learnings (found in live deployment testing): DuckDuckGo
+tarpits datacenter IPs, Wikipedia has no articles for plain dictionary
+words (Wiktionary fills that gap for definitional queries), and the
+evidence extraction window is **relevance-picked** (wiki pages front-load
+navigation; definitions can sit mid-page) — see `docs/retrieval.md`.
 
 ## RAG architecture
 
