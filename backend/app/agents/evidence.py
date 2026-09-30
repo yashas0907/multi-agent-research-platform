@@ -55,6 +55,7 @@ class EvidenceAgent(BaseAgent):
             return []
 
         user_payload = self._prompt.render_user(
+            question=state.question[:300],
             subquestion=subquestion.text,
             title=source.title,
             url=source.url or "n/a",
