@@ -45,9 +45,10 @@ class EvidenceAgent(BaseAgent):
         source: SourceRecord,
         subquestion: SubQuestion,
     ) -> list[Evidence]:
-        # 2200 chars ≈ 550 tokens: enough context for extraction while staying
-        # well inside free-tier token-per-minute budgets.
-        text = (source.content_text or source.snippet or "")[:2200]
+        # 4000 chars ≈ 1000 tokens: Wiktionary/wiki pages carry heavy
+        # navigation boilerplate before content — the window must reach the
+        # definition sections while staying inside free-tier token budgets.
+        text = (source.content_text or source.snippet or "")[:4000]
         if not text.strip():
             return []
 
