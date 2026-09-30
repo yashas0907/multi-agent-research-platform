@@ -243,20 +243,33 @@ _DEFN_PATTERNS = ("what is", "what are", "definition of", "meaning of", "define"
 
 
 def _definitional_topic(query: str) -> str | None:
-    """Extract the topic term from a definitional query ('definition of blatant'
-    → 'blatant'; 'what is retrieval augmented generation' → that phrase)."""
+    """Extract the topic term from a definitional query.
+
+    Handles: 'definition of X' / 'what is X' / 'X definition' — anywhere in
+    the query (search agents generate 'Merriam-Webster definition of blatant'
+    style queries).
+    """
+    import re
+
     q = query.strip().lower().rstrip("?").strip()
-    for pat in _DEFN_PATTERNS:
+    # 'definition of [the word] X' anywhere in the query
+    m = re.search(r"definition of (?:the )?(?:word )?([a-z][a-z\s\-']{1,60})", q)
+    if m:
+        topic = m.group(1).strip().strip(" :\",'")
+        # cut at trailing qualifiers
+        for cut in (" in ", " from ", " according", " on "):
+            topic = topic.split(cut)[0].strip()
+        if topic:
+            return topic.title()
+    # 'what is/are X'
+    for pat in ("what is", "what are", "meaning of", "define"):
         if q.startswith(pat):
             topic = q[len(pat):].strip(" :\",'")
-            # drop trailing qualifiers like 'the word', 'standard dictionary definition of'
-            for filler in ("the word ", "standard dictionary definition of ", "dictionary "):
-                if topic.startswith(filler):
-                    topic = topic[len(filler):]
-            topic = topic.strip(" :\",'")
+            for cut in (" in ", " from ", " according", " used "):
+                topic = topic.split(cut)[0].strip()
             if 2 <= len(topic) <= 80:
                 return topic.title()
-    # 'X definition' / 'X meaning' (topic first)
+    # 'X definition' / 'X meaning' (topic first, single word)
     for suffix in (" definition", " meaning"):
         if q.endswith(suffix):
             topic = q[: -len(suffix)].strip()
