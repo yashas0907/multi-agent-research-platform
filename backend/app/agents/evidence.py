@@ -45,10 +45,12 @@ class EvidenceAgent(BaseAgent):
         source: SourceRecord,
         subquestion: SubQuestion,
     ) -> list[Evidence]:
-        # 4000 chars ≈ 1000 tokens: Wiktionary/wiki pages carry heavy
-        # navigation boilerplate before content — the window must reach the
-        # definition sections while staying inside free-tier token budgets.
-        text = (source.content_text or source.snippet or "")[:4000]
+        # 4000 chars ≈ 1000 tokens: wiki pages carry heavy navigation
+        # boilerplate before content. Rather than always taking the head
+        # (definitions can sit anywhere), pick the window with the highest
+        # keyword overlap with the subquestion.
+        raw_text = source.content_text or source.snippet or ""
+        text = _best_window(raw_text, subquestion.text, window=4000)
         if not text.strip():
             return []
 
@@ -112,6 +114,34 @@ def _grounded(snippet: str, source_text: str) -> bool:
         return False
     hits = sum(1 for g in grams if g in t)
     return hits / len(grams) >= 0.8
+
+
+def _best_window(text: str, subquestion: str, window: int = 4000) -> str:
+    """Pick the `window`-char slice of `text` most relevant to the subquestion.
+
+    Wiki/dictionary pages front-load hundreds of chars of navigation; the
+    definition may sit mid-page. A relevance-picked window beats a fixed
+    head-of-text window.
+    """
+    text = text.strip()
+    if len(text) <= window:
+        return text
+    import re as _re
+
+    terms = {t for t in _re.sub(r"[^a-z0-9]+", " ", subquestion.lower()).split() if len(t) > 3}
+    step = window // 2  # overlapping windows
+    best_text = text[:window]
+    best_score = -1
+    for start in range(0, len(text) - window + 1, step):
+        chunk = text[start : start + window]
+        if not terms:
+            break
+        chunk_terms = set(_re.sub(r"[^a-z0-9]+", " ", chunk.lower()).split())
+        score = len(terms & chunk_terms)
+        if score > best_score:
+            best_score = score
+            best_text = chunk
+    return best_text
 
 
 def _norm(text: str) -> str:
