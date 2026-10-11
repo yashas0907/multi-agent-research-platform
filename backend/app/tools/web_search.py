@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import time
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
@@ -313,6 +314,12 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
         "relevant to a research query. Returns title/URL/snippet metadata."
     )
 
+    # Circuit breaker: search engines tarpit datacenter IPs — after 2
+    # consecutive failures a provider is skipped for a cooldown instead of
+    # burning the timeout on every subsequent search (saves 15-45s/session).
+    FAILURE_THRESHOLD = 2
+    COOLDOWN_SECONDS = 600
+
     def __init__(self, provider: SearchProvider | None = None) -> None:
         self._provider = provider or _default_provider()
         # Production resilience chain: search engines tarpit/block datacenter
@@ -323,6 +330,7 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
             self._fallbacks.append(WikipediaSearchProvider())
         if self._provider.name != "offline":
             self._fallbacks.append(OfflineSearchProvider())
+        self._health: dict[str, dict] = {}  # name -> {failures, blocked_until}
 
     def input_schema(self) -> type[WebSearchInput]:
         return WebSearchInput
@@ -331,26 +339,42 @@ class WebSearchTool(BaseTool[WebSearchInput, WebSearchOutput]):
         return WebSearchOutput
 
     async def run(self, params: WebSearchInput) -> WebSearchOutput:
-        try:
-            results = await self._provider.search(params.query, params.max_results)
-        except SearchError:
-            results = []
-        except Exception as exc:  # noqa: BLE001
-            raise SearchError(f"search failed: {exc}", retryable=True) from exc
+        chain: list[SearchProvider] = [self._provider, *self._fallbacks]
+        used = "none"
+        for provider in chain:
+            if not self._usable(provider):
+                continue  # circuit open: skip the burned provider instantly
+            try:
+                results = await provider.search(params.query, params.max_results)
+            except SearchError:
+                self._mark_failure(provider)
+                continue
+            except Exception as exc:  # noqa: BLE001
+                raise SearchError(f"search failed: {exc}", retryable=True) from exc
+            if results:
+                self._mark_success(provider)
+                used = provider.name if provider is self._provider else f"{self._provider.name}+{provider.name}"
+                return WebSearchOutput(
+                    query=params.query, results=results, provider=used, total=len(results)
+                )
+            # empty (not failed) — try the next provider, don't trip the breaker
+            used = f"{self._provider.name}+empty"
+        return WebSearchOutput(query=params.query, results=[], provider=used, total=0)
 
-        used = self._provider.name
-        if not results:
-            for fb in self._fallbacks:
-                try:
-                    results = await fb.search(params.query, params.max_results)
-                except SearchError:
-                    continue
-                if results:
-                    used = f"{self._provider.name}+{fb.name}"
-                    break
-        return WebSearchOutput(
-            query=params.query, results=results, provider=used, total=len(results)
-        )
+    def _usable(self, provider: SearchProvider) -> bool:
+        health = self._health.get(provider.name)
+        if health and health["blocked_until"] > time.time():
+            return False
+        return True
+
+    def _mark_failure(self, provider: SearchProvider) -> None:
+        health = self._health.setdefault(provider.name, {"failures": 0, "blocked_until": 0.0})
+        health["failures"] += 1
+        if health["failures"] >= self.FAILURE_THRESHOLD:
+            health["blocked_until"] = time.time() + self.COOLDOWN_SECONDS
+
+    def _mark_success(self, provider: SearchProvider) -> None:
+        self._health[provider.name] = {"failures": 0, "blocked_until": 0.0}
 
 
 def _default_provider() -> SearchProvider:

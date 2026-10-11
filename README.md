@@ -391,6 +391,16 @@ Deploy the backend to [Render](https://render.com) and the frontend to
 Free-tier notes: Render sleeps after ~15 min idle (~50s cold start on the
 next request); SSE streaming is supported by both platforms.
 
+**Eliminating the cold start (free):** point a free uptime pinger
+(e.g. [cron-job.org](https://cron-job.org) or UptimeRobot) at your backend's
+`/api/health` endpoint on a 10-minute schedule — the instance stays awake and
+requests stop hitting the ~50s cold start.
+
+**Speed on the free tier:** research sessions take ~1.5–2.5 min. The search
+tool uses a circuit breaker — when a search engine blocks the datacenter
+(DDG does), it is skipped instantly after 2 failures instead of burning its
+timeout on every search.
+
 ## Testing
 
 82 tests across four layers:
