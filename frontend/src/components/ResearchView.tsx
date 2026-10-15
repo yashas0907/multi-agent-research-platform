@@ -20,8 +20,18 @@ export default function ResearchView({ sessionId, onReset }: Props) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [subquestions, setSubquestions] = useState<SubQuestion[]>([]);
+  const [elapsed, setElapsed] = useState(0);
   const [tab, setTab] = useState<"trace" | "report">("trace");
   const seen = useRef(0);
+  const startedAt = useRef(Date.now());
+
+  // live elapsed-time ticker: makes the research phase feel active
+  useEffect(() => {
+    const tick = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt.current) / 1000));
+    }, 1000);
+    return () => clearInterval(tick);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -110,7 +120,11 @@ export default function ResearchView({ sessionId, onReset }: Props) {
             <>
               <div className="pct">
                 <span>{status.stage_label}</span>
-                <span>iteration {status.current_iteration}</span>
+                <span>
+                  {elapsed >= 60
+                    ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed`
+                    : `${elapsed}s elapsed`}
+                </span>
               </div>
               <div className="progress-track">
                 <div className="progress-fill" style={{ width: `${status.progress_pct}%` }} />
