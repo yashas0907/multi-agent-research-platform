@@ -198,7 +198,10 @@ export const api = {
       method: "POST",
     }),
 
-  listSessions: () => jsonFetch<{ sessions: Array<{ session_id: string; question: string; status: string; depth: string }> }>("/api/research?limit=10"),
+  listSessions: (limit = 10) =>
+    jsonFetch<{ sessions: Array<{ session_id: string; question: string; status: string; depth: string }> }>(
+      `/api/research?limit=${limit}`
+    ),
 
   uploadDocument: (file: File) => {
     const form = new FormData();

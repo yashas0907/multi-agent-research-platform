@@ -5,6 +5,20 @@ interface Props {
   onStart: (sessionId: string) => void;
 }
 
+interface PastSession {
+  session_id: string;
+  question: string;
+  status: string;
+  depth: string;
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  report_ready: "var(--green)",
+  completed_partial: "var(--yellow)",
+  failed: "var(--red)",
+  cancelled: "var(--muted)",
+};
+
 const DEPTHS: { value: string; label: string; desc: string }[] = [
   { value: "quick", label: "Quick", desc: "3 subquestions · 1 query each · 1 critic pass" },
   { value: "standard", label: "Standard", desc: "5 subquestions · 2 queries each · 2 critic passes" },
@@ -26,9 +40,13 @@ export default function Workspace({ onStart }: Props) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [past, setPast] = useState<PastSession[]>([]);
 
   const loadDocs = () => api.listDocuments().then((r) => setDocs(r.documents)).catch(() => {});
-  useEffect(() => { loadDocs(); }, []);
+  useEffect(() => {
+    loadDocs();
+    api.listSessions(6).then((r) => setPast(r.sessions)).catch(() => {});
+  }, []);
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -194,6 +212,36 @@ export default function Workspace({ onStart }: Props) {
             </div>
           ))}
         </div>
+
+        {past.length > 0 && (
+          <div className="card">
+            <h2>Recent Research</h2>
+            {past.map((s) => (
+              <div
+                key={s.session_id}
+                className="sq"
+                style={{ cursor: "pointer" }}
+                onClick={() => onStart(s.session_id)}
+                title="Open this research"
+              >
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span
+                    style={{
+                      width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                      background: STATUS_COLOR[s.status] || "var(--muted)",
+                    }}
+                  />
+                  <p className="sq-text" style={{ margin: 0, flex: 1 }}>
+                    {s.question.length > 90 ? s.question.slice(0, 90) + "…" : s.question}
+                  </p>
+                </div>
+                <p style={{ margin: "4px 0 0", color: "var(--muted)", fontSize: 11.5 }}>
+                  {s.depth} · {s.status.replace("_", " ")} · click to open the report
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
